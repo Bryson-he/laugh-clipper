@@ -9,8 +9,8 @@ datas = [
 binaries = []
 hiddenimports = ["keyboard"]
 
-# mediapipe ships native libraries + data files; soundcard reads its .h definitions at runtime
-for pkg in ("mediapipe", "soundcard"):
+# mediapipe and numpy ship native libraries + data files; soundcard reads its .h definitions at runtime
+for pkg in ("numpy", "mediapipe", "soundcard"):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b

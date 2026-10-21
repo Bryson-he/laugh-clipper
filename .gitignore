@@ -5,3 +5,4 @@ dist/
 models/*.tflite
 *.log
 laugh_clipper_settings.json
+.venv/

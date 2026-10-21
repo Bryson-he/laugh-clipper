@@ -22,7 +22,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pyinstaller
+          pip install --upgrade -r requirements.txt pyinstaller pyinstaller-hooks-contrib
 
       - name: Stamp version
         shell: pwsh
@@ -35,7 +35,7 @@ jobs:
         run: python tools/fetch_model.py
 
       - name: Build app
-        run: pyinstaller LaughClipper.spec --noconfirm
+        run: pyinstaller LaughClipper.spec --noconfirm --clean
 
       - name: Build installer
         shell: pwsh
