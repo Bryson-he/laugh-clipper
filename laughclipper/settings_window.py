@@ -1,17 +1,19 @@
 """The settings window, laid out like macOS System Settings."""
 
+from pathlib import Path
+
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import (QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QPushButton, QScrollArea,
-                               QStackedWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QFileDialog, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu, QPushButton,
+                               QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
 from . import winutil
-from .config import DEFAULTS, S, hotkey_label
-from .engine import short_name
+from .config import DEFAULTS, S, clean_games, hotkey_label
+from .engine import SOUNDS, short_name
 from .theme import T
 from .version import VERSION
 from .widgets import (Group, KeyCap, LevelMeter, NavItem, PopupButton, PositionPicker, Row, Segmented, Slider,
-                      Switch)
+                      Switch, WarningBadge)
 
 PAGES = [
     ("General", "", "#8e8e93"),
@@ -20,6 +22,15 @@ PAGES = [
     ("Clipping", "", "#5e5ce6"),
     ("Detection", "", "#34c759"),
 ]
+
+
+SOUND_HINTS = {
+    "laughter": "Laughs, giggles, chuckles and snickers.",
+    "cheering": "Cheers, whoops and applause.",
+    "shouting": "Shouts, yells and bellows.",
+    "screaming": "Screams of fright or excitement.",
+    "gasp": "A sharp breath in, like after a close call.",
+}
 
 
 def secs(v):
@@ -199,7 +210,29 @@ class SettingsWindow(QWidget):
     def page_general(self):
         p = Page("General")
         g = p.section()
+        open_medal = QPushButton("Open Medal")
+        open_medal.setObjectName("prominent")
+        open_medal.clicked.connect(self.ctrl.open_medal)
+        self.medal_row = g.add(Row("Medal isn't running", "Clips can't be saved until Medal is open.", open_medal))
+        self.medal_row.layout().insertWidget(0, WarningBadge(), 0, Qt.AlignmentFlag.AlignVCenter)
+        self.medal_row.setVisible(not self.ctrl.medal_ok)
         self.run_row = g.add(Row("Laugh detection", "", self.switch("running")))
+        g = p.section("Games")
+        self.game_row = g.add(Row("Only listen while playing", "", self.switch("game_only")))
+        self.fullscreen_row = g.add(Row("Count any full-screen app as a game",
+                                        "Catches most games without adding them. Full-screen videos count too.",
+                                        self.switch("fullscreen_games")))
+        self.autoadd_row = g.add(Row("Add games automatically",
+                                     "Adds Steam, Epic, Xbox, Riot, EA, Ubisoft and GOG games when you play them.",
+                                     self.switch("auto_add_games")))
+        self.add_game_btn = QPushButton("Add Game…")
+        self.add_game_btn.setObjectName("small")
+        self.add_game_btn.clicked.connect(self.show_game_menu)
+        self.games_group = p.section("Your games", header_widget=self.add_game_btn,
+                                     footer="Detection pauses when none of these is the window in front, so "
+                                            "videos and music between games don't set it off. It keeps "
+                                            "listening for a few seconds after you alt-tab.")
+        self.build_games()
         g = p.section(footer="When the window is closed, Laugh Clipper keeps running in the system tray.")
         self.startup_sw = Switch(winutil.startup_enabled())
         self.startup_sw.toggled.connect(winutil.set_startup)
@@ -262,6 +295,8 @@ class SettingsWindow(QWidget):
         g.add(Row("Medal clip hotkey", "Click to change. Must match the clip hotkey in Medal.", self.keycap))
         g.add(Row("Save clips automatically", "Saves the clip for you instead of asking.",
                   self.switch("auto_clip")))
+        g.add(Row("Warn when Medal isn't running", "Tells you the clip won't save instead of pretending it did.",
+                  self.switch("medal_check")))
         self.delay_row = self.slider_row(g, "Wait after laughing stops",
                                          "Keeps the whole laugh in the clip.", "clip_delay", 0, 30, 1,
                                          lambda v: "Instantly" if v == 0 else secs(v))
@@ -272,14 +307,22 @@ class SettingsWindow(QWidget):
 
     def page_detection(self):
         p = Page("Detection")
+        g = p.section("Trigger on", footer="Laughter is the most reliable. Shouting and screaming can also "
+                                           "pick up loud game audio, so try them on your mic first.")
+        self.trigger_sw = {}
+        for key, (name, _, _) in SOUNDS.items():
+            sw = Switch(key in S["triggers"])
+            sw.toggled.connect(lambda on, key=key: self.toggle_trigger(key, on))
+            self.trigger_sw[key] = sw
+            g.add(Row(name, SOUND_HINTS.get(key), sw))
         g = p.section(footer="Watch the live score while you laugh, then set the trigger just below where "
                              "it usually peaks.")
         self.live_meter = LevelMeter(210)
-        g.add(Row("Live laugh score", "The highest score across everything you're listening to.",
-                  self.live_meter))
-        self.slider_row(g, "Trigger level", "Lower catches more laughs, higher means fewer false alarms.",
+        g.add(Row("Live score", "The highest score for the sounds above, across everything you're "
+                                "listening to.", self.live_meter))
+        self.slider_row(g, "Trigger level", "Lower catches more, higher means fewer false alarms.",
                         "threshold", 0.05, 0.9, 0.01, lambda v: f"{v:.2f}")
-        self.slider_row(g, "Laugh length needed", "How long someone has to laugh before it counts.",
+        self.slider_row(g, "Length needed", "How long the laugh (or cheer…) has to last before it counts.",
                         "min_laugh", 0.5, 3, 0.25, secs)
         self.slider_row(g, "Pause tolerance",
                         "Breaths and short pauses up to this long still count as the same laugh.",
@@ -287,6 +330,59 @@ class SettingsWindow(QWidget):
         self.slider_row(g, "Wait between prompts", "Stops it asking again straight away.",
                         "cooldown", 0, 120, 5, secs)
         return p.finish()
+
+    # ---------------------------------------------------------- games
+    def build_games(self):
+        self.games_group.clear()
+        if not S["games"]:
+            self.games_group.add(Row("No games added", "Play a game, or click Add Game… while it's running."))
+        for game in S["games"]:
+            rm = QPushButton("Remove")
+            rm.setObjectName("small")
+            rm.clicked.connect(lambda _=False, exe=game["exe"]: self.remove_game(exe))
+            self.games_group.add(Row(game["name"], game["exe"], rm))
+        self.games_group.update()
+        self.update_game_rows()
+
+    def show_game_menu(self):
+        menu = QMenu(self)
+        menu.setToolTipsVisible(True)
+        added = {g["exe"] for g in S["games"]}
+        apps = winutil.running_apps()
+        for path, title in apps:
+            exe = Path(path).name.lower()
+            name = winutil.exe_description(path)
+            act = menu.addAction(f"{name}  ·  added" if exe in added else name)
+            act.setToolTip(title)
+            act.setEnabled(exe not in added)
+            act.triggered.connect(lambda _=False, path=path: self.add_game(path))
+        if not apps:
+            menu.addAction("No open apps found").setEnabled(False)
+        menu.addSeparator()
+        menu.addAction("Browse…", self.browse_game)
+        menu.exec(self.add_game_btn.mapToGlobal(self.add_game_btn.rect().bottomLeft()))
+
+    def browse_game(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Choose a Game", "", "Programs (*.exe)")
+        if path:
+            self.add_game(path)
+
+    def add_game(self, path):
+        game = {"exe": Path(path).name, "name": winutil.exe_description(path)}
+        self.ctrl.set("ignored_games", [e for e in S["ignored_games"] if e != Path(path).name.lower()])
+        self.ctrl.set("games", clean_games(S["games"] + [game]))
+
+    def remove_game(self, exe):
+        if exe not in S["ignored_games"]:      # so auto-add doesn't put it straight back
+            self.ctrl.set("ignored_games", S["ignored_games"] + [exe])
+        self.ctrl.set("games", [g for g in S["games"] if g["exe"] != exe])
+
+    def update_game_rows(self):
+        on = S["game_only"]
+        self.fullscreen_row.setEnabled(on)
+        self.autoadd_row.setEnabled(on)
+        self.games_group.setEnabled(on)
+        self.add_game_btn.setEnabled(on)
 
     # ---------------------------------------------------------- audio devices
     def build_devices(self, mics, spks, default):
@@ -317,6 +413,13 @@ class SettingsWindow(QWidget):
             self.out_rows[n] = (row, meter, n in spks)
         self.out_group.update()
 
+    def toggle_trigger(self, key, on):
+        triggers = [k for k in SOUNDS if (k == key and on) or (k != key and k in S["triggers"])]
+        if not triggers:                       # keep at least one sound on
+            self.trigger_sw[key].set_silent(True)
+            return
+        self.ctrl.set("triggers", triggers)
+
     def mic_selected(self, i):
         self.ctrl.set("mic_device", "" if i <= 0 else self.mic_names[i - 1])
 
@@ -343,9 +446,11 @@ class SettingsWindow(QWidget):
         top = info[0]
         if top == "silence":
             return "Silent"
+        if top == "paused":
+            return "Waiting for a game"
         text = f"Hearing: {top}"
         if isinstance(lvl, float) and lvl >= 0.05:
-            text += f"  ·  laugh {lvl:.2f}"
+            text += f"  ·  {SOUNDS[eng.sound.get(key, 'laughter')][0].lower()} {lvl:.2f}"
         return text
 
     def display_level(self, key):
@@ -386,24 +491,42 @@ class SettingsWindow(QWidget):
             row.setEnabled(S["auto_clip"])
 
     def update_status(self):
-        running = S["running"]
-        green = T.css("green")
+        state, game = self.ctrl.status(), self.ctrl.game
         n = len(self.ctrl.engine.wanted())
-        if running:
-            self.status.setText(f'<span style="color:{green}">●</span> Listening')
+        self.medal_row.setVisible(not self.ctrl.medal_ok)
+        if state == "listening":
+            self.status.setText(f'<span style="color:{T.css("green")}">●</span> Listening')
             self.run_row.set_sub(f"Listening to {n} source{'s' if n != 1 else ''}." if n else
                                  "Nothing selected. Pick a mic or PC audio in Audio.")
+        elif state == "waiting":
+            self.status.setText(f'<span style="color:{T.css("orange")}">●</span> Waiting for a game')
+            self.run_row.set_sub("Waiting for a game. Detection starts when one is the window in front.")
         else:
             self.status.setText("Paused")
             self.run_row.set_sub("Paused. Turn on to start listening for laughs.")
+        if state != "paused" and not self.ctrl.medal_ok:
+            self.status.setText(f'<span style="color:{T.css("orange")}">●</span> Medal isn\'t running')
+        if not S["game_only"]:
+            self.game_row.set_sub("Off, so it listens all the time.")
+        elif game:
+            self.game_row.set_sub(f"{game} is in front, so it's listening.")
+        else:
+            self.game_row.set_sub("No game in front, so detection is waiting.")
 
     def on_setting_changed(self, key):
         if key in self.switches:
             self.switches[key].set_silent(S[key])
-        if key in ("running", "listen_mic", "outputs"):
+        if key in ("running", "listen_mic", "outputs", "game_only", "game", "medal"):
             self.update_status()
+        if key == "game_only":
+            self.update_game_rows()
+        if key == "games":
+            self.build_games()
         if key == "auto_clip":
             self.update_auto_rows()
+        if key == "triggers":
+            for k, sw in self.trigger_sw.items():
+                sw.set_silent(k in S["triggers"])
         if key == "hotkey":
             self.keycap.recording = False
             self.keycap.set_label(hotkey_label())

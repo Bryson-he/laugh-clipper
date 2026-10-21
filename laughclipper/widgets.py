@@ -384,6 +384,26 @@ class LevelMeter(QWidget):
         p.drawRoundedRect(QRectF(x - 1, cy - 6, 2, 12), 1, 1)
 
 
+class WarningBadge(QWidget):
+    """Small orange circle with an exclamation mark, for rows that need attention."""
+
+    def __init__(self, size=22, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(AA)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        u = r.width() / 22
+        p.setPen(NO_PEN)
+        p.setBrush(T.c("orange"))
+        p.drawEllipse(r)
+        p.setBrush(QColor("white"))
+        p.drawRoundedRect(QRectF(r.center().x() - 1.2 * u, r.top() + 4.6 * u, 2.4 * u, 8.6 * u), 1.2 * u, 1.2 * u)
+        p.drawEllipse(QPointF(r.center().x(), r.top() + 16.4 * u), 1.45 * u, 1.45 * u)
+
+
 class PositionPicker(QWidget):
     """A little monitor; click where the notification should go."""
     changed = Signal(str)

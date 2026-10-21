@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QWidget
 
 from . import winutil
 from .config import split_position
+from .engine import SOUNDS
 from .theme import T
 from .widgets import Spring, clamp
 
@@ -20,6 +21,7 @@ EDGE_GAP = 18               # distance from the screen edge
 
 BLUE, BLUE_HOVER = QColor("#0a84ff"), QColor("#3d9bff")
 SUB = QColor("#98989d")
+SURPRISED = {"shouting", "screaming", "gasp"}   # these get the "O" mouth instead of the laughing one
 
 
 def ease_out(t):
@@ -32,7 +34,7 @@ class Toast(QWidget):
     close_requested = Signal()
     finished = Signal()
 
-    def __init__(self, screen, position, mode, source, hotkey, seconds):
+    def __init__(self, screen, position, mode, source, sound, hotkey, seconds):
         flags = (Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint | Qt.WindowType.WindowStaysOnTopHint
                  | Qt.WindowType.WindowDoesNotAcceptFocus | Qt.WindowType.NoDropShadowWindowHint)
         super().__init__(None, flags)
@@ -41,8 +43,10 @@ class Toast(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setMouseTracking(True)
 
-        self.mode, self.prev = mode, None          # "ask" | "pending" | "saved"
+        self.mode, self.prev = mode, None          # "ask" | "pending" | "saved" | "nomedal"
         self.source, self.hotkey = source, hotkey
+        self.sound_name, self.still = SOUNDS.get(sound, SOUNDS["laughter"])[:2]
+        self.surprised = sound in SURPRISED
         self.total = self.left = max(float(seconds), 0.1)
         self.laughing = False
         self.hover = self.hover_ring = self.closing = False
@@ -112,6 +116,19 @@ class Toast(QWidget):
         self.setCursor(Qt.CursorShape.ArrowCursor)
         self.close_at = self.t + 1.5
 
+    def set_nomedal(self, seconds):
+        """Medal closed before we could clip: say so instead of pretending to save."""
+        if self.mode in ("saved", "nomedal") or self.closing:
+            return
+        self.prev, self.mode = self.mode, "nomedal"
+        self.swap.snap(0.0)
+        self.swap.target = 1.0
+        self.w.target, self.h.target = self.size_for("nomedal")
+        self.total = self.left = max(float(seconds), 0.1)
+        self.scale.target = 1.0
+        self.press.target = 0.0
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+
     def set_pending(self, remaining, laughing, total, level):
         self.left = max(0.0, remaining)
         self.total = max(float(total), 0.1)
@@ -137,7 +154,7 @@ class Toast(QWidget):
         for s in self.springs:
             s.step(dt)
         if not self.closing and not self.hover:
-            if self.mode == "ask":
+            if self.mode in ("ask", "nomedal"):
                 self.left -= dt
                 if self.left <= 0:
                     self.dismiss()
@@ -163,11 +180,12 @@ class Toast(QWidget):
     def mouseMoveEvent(self, e):
         pos = e.position()
         over = self._over(pos) and not self.closing
+        can_clip = self.mode in ("ask", "pending")
         if over != self.hover:
             self.hover = over
-            self.scale.target = 1.025 if over and self.mode != "saved" else 1.0
+            self.scale.target = 1.025 if over and can_clip else 1.0
         self.hover_ring = self._on_ring(pos)
-        clickable = over and self.mode != "saved"
+        clickable = over and (can_clip or self.hover_ring)
         self.setCursor(Qt.CursorShape.PointingHandCursor if clickable else Qt.CursorShape.ArrowCursor)
 
     def leaveEvent(self, e):
@@ -182,13 +200,14 @@ class Toast(QWidget):
         if self._on_ring(pos):
             self.close_requested.emit()
             return
-        self.press.target = 1.0
+        if self.mode in ("ask", "pending"):
+            self.press.target = 1.0
 
     def mouseReleaseEvent(self, e):
         if self.press.target > 0:
             self.press.target = 0.0
             pos = e.position()
-            if self._over(pos) and not self._on_ring(pos) and self.mode != "saved":
+            if self._over(pos) and not self._on_ring(pos) and self.mode in ("ask", "pending"):
                 self.clip_requested.emit()
 
     # ----- painting -----
@@ -255,18 +274,27 @@ class Toast(QWidget):
             d = icon * pop
             draw_check_icon(p, QRectF(ic.center().x() - d / 2, ic.center().y() - d / 2, d, d), self.check.value)
             self.draw_texts(p, tx, cy, rr.right() - pad - tx, "Clip saved", "Sent to Medal", None)
+        elif mode == "nomedal":
+            draw_warning_icon(p, ic)
+            ring_d = 30
+            ring = QRectF(rr.right() - 22 - ring_d, cy - ring_d / 2, ring_d, ring_d)
+            if live:
+                self.ring_rect = ring
+            self.draw_texts(p, tx, cy, ring.left() - 14 - tx, f"{self.sound_name} detected",
+                            "Medal isn't running, so no clip was saved", None)
+            draw_ring(p, ring, clamp(self.left / self.total), self.hover_ring)
         else:
-            draw_laugh_icon(p, ic)
+            draw_laugh_icon(p, ic, self.surprised)
             ring_d = 30
             ring = QRectF(rr.right() - 22 - ring_d, cy - ring_d / 2, ring_d, ring_d)
             btn = QRectF(ring.left() - 10 - 64, cy - 17, 64, 34)
             if live:
                 self.ring_rect, self.btn_rect = ring, btn
             if mode == "ask":
-                title, sub = "Laugh detected", f"{self.source}  ·  {self.hotkey} to clip"
+                title, sub = f"{self.sound_name} detected", f"{self.source}  ·  {self.hotkey} to clip"
                 frac = self.left / self.total
             elif self.laughing:
-                title, sub = "Saving clip", f"Still laughing  ·  {self.source}"
+                title, sub = "Saving clip", f"{self.still}  ·  {self.source}"
                 frac = 1.0
             else:
                 title, sub = "Saving clip", f"In {max(0, math.ceil(self.left))}s  ·  {self.source}"
@@ -310,7 +338,7 @@ class Toast(QWidget):
 
 
 # ---------------------------------------------------------------- icons
-def draw_laugh_icon(p, r):
+def draw_laugh_icon(p, r, surprised=False):
     g = QLinearGradient(r.topLeft(), r.bottomLeft())
     g.setColorAt(0, QColor("#ffd60a"))
     g.setColorAt(1, QColor("#ff9f0a"))
@@ -325,6 +353,20 @@ def draw_laugh_icon(p, r):
     ink = QColor(92, 46, 0)
     p.setPen(QPen(ink, 2.7 * u, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
     p.setBrush(Qt.BrushStyle.NoBrush)
+    if surprised:
+        # raised brows, round eyes and an "O" mouth
+        for ex in (13.5, 26.5):
+            brow = QPainterPath(pt(ex - 3.4, 11.5))
+            brow.quadTo(pt(ex, 8.5), pt(ex + 3.4, 11.5))
+            p.drawPath(brow)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(ink)
+        for ex in (13.5, 26.5):
+            p.drawEllipse(pt(ex, 17), 2.4 * u, 2.9 * u)
+        p.drawEllipse(pt(20, 27.5), 5 * u, 6 * u)
+        p.setBrush(QColor("#ff6b6b"))
+        p.drawEllipse(pt(20, 30.5), 3.2 * u, 2.2 * u)
+        return
     for ex in (13.5, 26.5):
         eye = QPainterPath(pt(ex - 3.6, 17.5))
         eye.quadTo(pt(ex, 11.5), pt(ex + 3.6, 17.5))
@@ -340,6 +382,21 @@ def draw_laugh_icon(p, r):
     p.setBrush(QColor("#ff6b6b"))
     p.drawEllipse(pt(20, 32), 6.5 * u, 4.5 * u)
     p.restore()
+
+
+def draw_warning_icon(p, r):
+    """Orange circle with a white exclamation mark."""
+    g = QLinearGradient(r.topLeft(), r.bottomLeft())
+    g.setColorAt(0, QColor("#ffb340"))
+    g.setColorAt(1, QColor("#ff8a00"))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(g)
+    p.drawEllipse(r)
+    u = r.width() / 40
+    c = r.center()
+    p.setBrush(QColor("white"))
+    p.drawRoundedRect(QRectF(c.x() - 2 * u, r.top() + 9 * u, 4 * u, 15 * u), 2 * u, 2 * u)
+    p.drawEllipse(QPointF(c.x(), r.top() + 29.5 * u), 2.4 * u, 2.4 * u)
 
 
 def draw_check_icon(p, r, prog):

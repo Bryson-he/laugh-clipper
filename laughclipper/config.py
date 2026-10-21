@@ -32,7 +32,15 @@ DEFAULTS = {
     "auto_clip": False,
     "clip_delay": 10,          # auto-save: seconds to wait after the laughing stops
     "max_wait": 30,            # auto-save: save anyway this long after the laugh started (0 = never)
+    "medal_check": True,       # warn (and don't pretend to save) when Medal isn't running
+    # games
+    "game_only": False,        # only listen while a game is the window in front
+    "games": [],               # [{"exe": "rocketleague.exe", "name": "Rocket League"}]
+    "fullscreen_games": True,  # also count any full-screen app as a game
+    "auto_add_games": True,    # add Steam/Epic/Xbox… games to "games" when they're played
+    "ignored_games": [],       # exe names removed by hand, so auto-add leaves them out
     # detection
+    "triggers": ["laughter"],  # sounds that trigger a clip (keys of engine.SOUNDS)
     "threshold": 0.30,
     "min_laugh": 1.0,          # seconds of laughing needed to trigger
     "pause_tolerance": 1.5,    # a pause shorter than this still counts as the same laugh
@@ -67,6 +75,11 @@ def load():
             data["min_laugh"] = data["hits_needed"] * 0.5
         S.update({k: v for k, v in data.items() if k in DEFAULTS})
         S["silence_level"] = min(S["silence_level"], DEFAULTS["silence_level"])
+        from .engine import SOUNDS
+        triggers = S["triggers"] if isinstance(S["triggers"], list) else []
+        S["triggers"] = [k for k in SOUNDS if k in triggers] or list(DEFAULTS["triggers"])
+        S["games"] = clean_games(S["games"])
+        S["ignored_games"] = [g["exe"] for g in clean_games(S["ignored_games"])]
         if path != SETTINGS_PATH:
             save()
         return True
@@ -81,6 +94,21 @@ def save():
         tmp.replace(SETTINGS_PATH)
     except Exception as e:
         log.warning("Couldn't save settings: %s", e)
+
+
+def clean_games(games):
+    """Keep well-formed game entries (bare exe names are accepted too), one per exe."""
+    out, seen = [], set()
+    for g in games if isinstance(games, list) else []:
+        if isinstance(g, str):
+            g = {"exe": g}
+        if not isinstance(g, dict) or not isinstance(g.get("exe"), str) or not g["exe"].strip():
+            continue
+        exe = Path(g["exe"].strip()).name.lower()
+        if exe not in seen:
+            seen.add(exe)
+            out.append({"exe": exe, "name": str(g.get("name") or Path(exe).stem)})
+    return out
 
 
 def split_position(pos):

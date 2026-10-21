@@ -21,7 +21,16 @@ log = logging.getLogger(__name__)
 SR = 48000
 HOP = 0.25                 # analyse a 1 s window every 0.25 s
 KEEP_RATIO = 0.55          # once laughing, a score above 55% of the trigger keeps it "still laughing"
-LAUGH_LABELS = {"Laughter", "Giggle", "Snicker", "Belly laugh", "Chuckle, chortle", "Baby laughter"}
+# sounds you can trigger on: key -> (name, "still ..." text, YAMNet class names)
+SOUNDS = {
+    "laughter": ("Laughter", "Still laughing",
+                 {"Laughter", "Giggle", "Snicker", "Belly laugh", "Chuckle, chortle", "Baby laughter"}),
+    "cheering": ("Cheering", "Still cheering", {"Cheering", "Whoop", "Applause"}),
+    "shouting": ("Shouting", "Still shouting", {"Shout", "Yell", "Bellow", "Children shouting"}),
+    "screaming": ("Screaming", "Still screaming", {"Screaming"}),
+    "gasp": ("Gasp", "Still going", {"Gasp"}),
+}
+LABEL_SOUND = {label: key for key, (_, _, labels) in SOUNDS.items() for label in labels}
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/1/yamnet.tflite"
 
 _SC = None
@@ -82,29 +91,39 @@ def make_classifier():
 
 
 def classify(classifier, samples):
-    """Returns (laugh score 0-1, name of the most likely sound)."""
+    """Returns ({sound key: score 0-1}, name of the most likely sound)."""
     from mediapipe.tasks.python.components.containers import audio_data as ad
     data = ad.AudioData.create_from_array(samples, SR)
-    best, top, top_score = 0.0, "", 0.0
+    scores, top, top_score = dict.fromkeys(SOUNDS, 0.0), "", 0.0
     for res in classifier.classify(data):
         for c in res.classifications[0].categories:
-            if c.category_name in LAUGH_LABELS:
-                best = max(best, c.score)
+            sound = LABEL_SOUND.get(c.category_name)
+            if sound:
+                scores[sound] = max(scores[sound], c.score)
             if c.score > top_score:
                 top, top_score = c.category_name, c.score
-    return best, top
+    return scores, top
+
+
+def best_sound(scores):
+    """The strongest of the sounds we're triggering on: (key, score)."""
+    keys = [k for k in S["triggers"] if k in scores] or ["laughter"]
+    k = max(keys, key=lambda k: scores[k])
+    return k, scores[k]
 
 
 class Engine(QObject):
-    laugh = Signal(object)              # source key: ("mic", name) or ("out", name)
+    laugh = Signal(object, str)         # source key ("mic", name) or ("out", name), sound key ("cheering")
     devices = Signal(list, list, str)   # microphones, outputs, default output
 
     def __init__(self):
         super().__init__()
         self.threads = {}    # key -> stop Event
-        self.levels = {}     # key -> latest laugh score, or "loading" / "error"
+        self.levels = {}     # key -> latest trigger score, or "loading" / "error"
+        self.sound = {}      # key -> which sound that score is for
         self.heard = {}      # key -> (top sound, volume)
         self.activity = {}   # key -> last time the score was above the keep-alive level
+        self.gated = False   # True while waiting for a game: keep recording, but don't classify
 
     # ----- sources -----
     def wanted(self):
@@ -120,7 +139,7 @@ class Engine(QObject):
         for key in list(self.threads):
             if key not in wanted:
                 self.threads.pop(key).set()
-                for d in (self.levels, self.heard, self.activity):
+                for d in (self.levels, self.sound, self.heard, self.activity):
                     d.pop(key, None)
         for key in wanted - set(self.threads):
             stop = threading.Event()
@@ -201,29 +220,38 @@ class Engine(QObject):
                         vol = float(np.sqrt(np.mean(mono ** 2)))
                         need = max(1, round(S["min_laugh"] / HOP))
 
+                        if self.gated:
+                            self.levels[key] = 0.0
+                            self.heard[key] = ("paused", vol)
+                            recent.clear()
+                            continue
                         if float(np.sqrt(np.mean(window ** 2))) < S["silence_level"]:
                             self.levels[key] = 0.0
                             self.heard[key] = ("silence", vol)
                             recent.clear()
                             continue
 
-                        score, top = classify(classifier, window)
+                        scores, top = classify(classifier, window)
                         if stop.is_set():
                             break
+                        sound, score = best_sound(scores)
                         self.levels[key] = score
+                        self.sound[key] = sound
                         self.heard[key] = (top, vol)
                         thr = S["threshold"]
                         if score >= thr * KEEP_RATIO:
                             self.activity[key] = time.time()
 
-                        # trigger when ~75% of the last `min_laugh` seconds were laughing,
+                        # trigger when ~75% of the last `min_laugh` seconds were laughing (or cheering…),
                         # so one quiet breath in the middle doesn't reset it
-                        recent.append(score >= thr)
+                        recent.append(sound if score >= thr else None)
                         while len(recent) > need:
                             recent.popleft()
-                        if len(recent) == need and recent[-1] and sum(recent) >= math.ceil(need * 0.75):
-                            log.info("[%s] laugh (score %.2f)", label, score)
-                            self.laugh.emit(key)
+                        hits = [s for s in recent if s]
+                        if len(recent) == need and recent[-1] and len(hits) >= math.ceil(need * 0.75):
+                            heard = max(set(hits), key=hits.count)
+                            log.info("[%s] %s (score %.2f)", label, heard, score)
+                            self.laugh.emit(key, heard)
                             recent.clear()
             except Exception as e:
                 log.warning("[%s] audio stopped: %s", label, e)

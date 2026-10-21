@@ -7,7 +7,7 @@ DARK = {
     "window": "#1e1e1e", "sidebar": "#262628", "group": "#2c2c2e", "group_border": (255, 255, 255, 14),
     "separator": "#38383a", "text": "#f5f5f7", "secondary": "#98989d", "tertiary": "#636366",
     "control": "#3a3a3c", "control_hover": "#444446", "control_press": "#4f4f52",
-    "accent": "#0a84ff", "accent_hover": "#3395ff", "green": "#30d158", "red": "#ff453a",
+    "accent": "#0a84ff", "accent_hover": "#3395ff", "green": "#30d158", "red": "#ff453a", "orange": "#ff9f0a",
     "track": "#48484a", "thumb": "#636366", "knob": "#ffffff", "keycap_shadow": "#141416",
     "hover": (255, 255, 255, 16), "menu": "#2c2c2e", "scroll": (255, 255, 255, 55),
     "meter_bg": (255, 255, 255, 28), "meter_idle": "#8e8e93",
@@ -17,7 +17,7 @@ LIGHT = {
     "window": "#f2f2f7", "sidebar": "#e8e8ed", "group": "#ffffff", "group_border": (0, 0, 0, 14),
     "separator": "#e3e3e8", "text": "#1d1d1f", "secondary": "#6e6e73", "tertiary": "#aeaeb2",
     "control": "#e8e8ed", "control_hover": "#dedee3", "control_press": "#d1d1d6",
-    "accent": "#007aff", "accent_hover": "#1a88ff", "green": "#34c759", "red": "#ff3b30",
+    "accent": "#007aff", "accent_hover": "#1a88ff", "green": "#34c759", "red": "#ff3b30", "orange": "#ff9500",
     "track": "#e3e3e8", "thumb": "#ffffff", "knob": "#ffffff", "keycap_shadow": "#c4c4ca",
     "hover": (0, 0, 0, 12), "menu": "#ffffff", "scroll": (0, 0, 0, 60),
     "meter_bg": (0, 0, 0, 20), "meter_idle": "#aeaeb2",
@@ -93,6 +93,7 @@ class Theme(QObject):
         QLabel#pageTitle {{ font-family: "{self.display}"; font-size: 24px; font-weight: 700; }}
         QLabel#appName {{ font-family: "{self.display}"; font-size: 15px; font-weight: 600; }}
         QLabel#secondary, QLabel#footer, QLabel#value {{ color: {c('secondary')}; font-size: 12px; }}
+        QLabel#secondary:disabled {{ color: {c('tertiary')}; }}
         QLabel#header {{ color: {c('secondary')}; font-size: 12px; font-weight: 600; }}
         QPushButton {{ background: {c('control')}; color: {c('text')}; border: none; border-radius: 7px;
                        padding: 5px 14px; min-height: 18px; }}
