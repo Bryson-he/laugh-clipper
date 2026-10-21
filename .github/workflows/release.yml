@@ -50,9 +50,18 @@ jobs:
           name: LaughClipper-Setup
           path: dist/LaughClipper-Setup-*.exe
 
+      - name: Release notes
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          # use release-notes/<tag>.md when there is one; GitHub's generated notes are added below it
+          $notes = "release-notes/${{ github.ref_name }}.md"
+          if (-not (Test-Path $notes)) { New-Item -ItemType File -Force $notes | Out-Null }
+
       - name: Publish release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           files: dist/LaughClipper-Setup-*.exe
+          body_path: release-notes/${{ github.ref_name }}.md
           generate_release_notes: true
