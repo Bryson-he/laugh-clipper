@@ -10,11 +10,11 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QPropertyAnimation, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QGuiApplication, QIcon, QPainter
+from PySide6.QtGui import QColor, QGuiApplication, QIcon, QImage, QPainter, QPixmap
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
-from . import config, winutil
+from . import clips, config, winutil
 from .config import S, hotkey_label
 from .engine import Engine, short_name
 from .theme import T
@@ -26,6 +26,34 @@ log = logging.getLogger("laughclipper")
 SERVER_NAME = "LaughClipper-single-instance"
 MUTEX_NAME = "LaughClipperRunning"
 GAME_GRACE = 5               # keep listening this many seconds after you alt-tab out of a game
+
+
+def badged(pix, state):
+    """Tray icon variant: 'paused' = faded and grey; 'waiting' / 'warning' = orange dot bottom-right."""
+    out = QPixmap(pix.size())
+    out.setDevicePixelRatio(pix.devicePixelRatio())
+    out.fill(Qt.GlobalColor.transparent)
+    w = pix.width() / pix.devicePixelRatio()
+    p = QPainter(out)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    if state == "paused":
+        gray = pix.toImage().convertToFormat(QImage.Format.Format_Grayscale8).convertToFormat(
+            QImage.Format.Format_ARGB32_Premultiplied)
+        alpha = pix.toImage().convertToFormat(QImage.Format.Format_Alpha8)
+        gray.setAlphaChannel(alpha)
+        p.setOpacity(0.55)
+        p.drawImage(QRectF(0, 0, w, w), gray)
+    else:
+        p.drawPixmap(0, 0, pix)
+        d = max(5.0, w * 0.42)
+        r = QRectF(w - d, w - d, d, d)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(0, 0, 0, 160))                        # dark ring so it shows on any taskbar
+        p.drawEllipse(r)
+        p.setBrush(QColor("#ff9f0a"))
+        p.drawEllipse(r.adjusted(d * 0.14, d * 0.14, -d * 0.14, -d * 0.14))
+    p.end()
+    return out
 
 
 def sorted_screens():
@@ -84,6 +112,7 @@ class Controller(QObject):
     changed = Signal(str)
     devices_changed = Signal(list, list, str)
     update_changed = Signal(str, dict)
+    history_changed = Signal()
     _hotkey_hit = Signal()
     _hotkey_recorded = Signal(str)
 
@@ -99,16 +128,25 @@ class Controller(QObject):
         self.updater.state.connect(self.on_update_state)
         self.update_state = ("idle", {})
         self.window = None
+        self.setup = None
         self.toast = None
         self.toast_is_test = False
         self.pending = None
         self.last_prompt = 0.0
         self.hotkey_handle = None
         self.badges = []
+        self.tray_icons = {}         # state -> tray icon, made once
         self.notified_version = None
         self.game = None             # name of the game in front (when "only while playing" is on)
         self.game_seen = 0.0
+        self.tuning = False          # our own window is in front, so we listen even without a game
         self.medal_ok = True         # False when Medal isn't running (and we're checking for it)
+        self.moment = None           # the laugh the popup is about: sound, source, game, peak score
+        self.sent_at = 0.0           # when we last sent the hotkey (it echoes back as a key press)
+        self.history = clips.load_history()
+        self.watcher = clips.ClipWatcher()
+        self.watcher.found.connect(self.on_clip_found)
+        self.watcher.missing.connect(self.on_clip_missing)
 
         self._hotkey_hit.connect(self.on_hotkey_pressed)
         self._hotkey_recorded.connect(self.apply_hotkey)
@@ -188,7 +226,7 @@ class Controller(QObject):
     # ----- games -----
     def check_game(self):
         """When 'only while playing' is on, pause detection unless a game is the window in front."""
-        game = None
+        game, tuning = None, False
         if S["game_only"] and S["running"]:
             now = time.time()
             pid, path, full = winutil.foreground_app()
@@ -202,16 +240,18 @@ class Controller(QObject):
                 self.save_timer.start()
                 self.changed.emit("games")
             if pid == os.getpid():
-                game = self.game                 # our own window: leave things as they are
+                # our own window: keep listening, so the meters work while you set things up
+                game, tuning = self.game, True
             elif match or (S["fullscreen_games"] and full and path and exe not in winutil.SYSTEM_EXES):
                 game = match["name"] if match else winutil.exe_description(path)
                 self.game_seen = now
             elif self.game and now - self.game_seen < GAME_GRACE:
                 game = self.game                 # quick alt-tab: keep listening for a moment
-        gated = bool(S["game_only"] and S["running"] and game is None)
-        if game != self.game or gated != self.engine.gated:
-            self.game, self.engine.gated = game, gated
-            log.info("game in front: %s", game or ("none, waiting" if gated else "not needed"))
+        gated = bool(S["game_only"] and S["running"] and game is None and not tuning)
+        if game != self.game or gated != self.engine.gated or tuning != self.tuning:
+            self.game, self.engine.gated, self.tuning = game, gated, tuning
+            log.info("game in front: %s", game or ("none, waiting" if gated else
+                                                   "none, but settings are open" if tuning else "not needed"))
             self.update_tray()
             self.changed.emit("game")
 
@@ -291,13 +331,17 @@ class Controller(QObject):
         self.changed.emit("hotkey")
 
     def on_hotkey_pressed(self):
-        """The Medal key was pressed (by you, or by us)."""
+        """The Medal key was pressed: by us (it echoes back), or by you while a popup is showing."""
         self.pending = None
         self.last_prompt = time.time()
-        if self.toast and self.toast.mode not in ("saved", "nomedal") and self.medal_ok:
-            self.toast.set_saved()
+        if time.monotonic() - self.sent_at < 1.5:
+            return                                   # just our own keyboard.send() coming back
+        if self.toast and self.toast.mode in ("ask", "pending") and self.medal_ok and not self.toast_is_test:
+            log.info("clip (you pressed the hotkey)")
+            self.after_clip()
 
     def send_hotkey(self):
+        self.sent_at = time.monotonic()
         try:
             import keyboard
             keyboard.send(S["hotkey"])
@@ -312,6 +356,8 @@ class Controller(QObject):
         self.last_prompt = now
         kind, name = key
         label = "Your mic" if kind == "mic" else short_name(name)
+        self.moment = {"key": key, "sound": sound, "source": label, "game": self.game, "auto": S["auto_clip"],
+                       "peak": self.engine.sound.get(key, (None, 0.0))[1]}
         if not self.check_medal():
             log.info("not clipping: Medal isn't running")
             self.show_toast("nomedal", label, sound)
@@ -319,7 +365,7 @@ class Controller(QObject):
             self.pending = {"start": now, "last": now}
             self.show_toast("pending", label, sound)
         elif S["auto_clip"]:
-            self.show_toast("saved", label, sound)
+            self.show_toast("saving", label, sound)
             self.clip()
         else:
             self.show_toast("ask", label, sound)
@@ -328,6 +374,8 @@ class Controller(QObject):
         if not self.pending:
             return
         now = time.time()
+        if self.moment:
+            self.moment["peak"] = max(self.moment["peak"], self.engine.sound.get(self.moment["key"], (None, 0.0))[1])
         laughing = self.engine.laughing(now)
         if laughing:
             # count the wait from the last laugh sound, not from when the pause tolerance ran out
@@ -348,13 +396,54 @@ class Controller(QObject):
                 self.toast.set_nomedal(S["popup_seconds"])
             log.info("not clipping: Medal isn't running")
             return
-        if self.toast:
-            self.toast.set_saved()
         if self.toast_is_test:
+            if self.toast:
+                self.toast.set_saved()
             log.info("test clip (hotkey not sent)")
             return
         QTimer.singleShot(60, self.send_hotkey)
-        log.info("clip saved")
+        log.info("clip: hotkey sent")
+        self.after_clip()
+
+    def after_clip(self):
+        """The hotkey went to Medal: check a new clip file turns up, then log it in the history."""
+        folder = clips.clips_folder() if S["confirm_clips"] else None
+        self.watcher.stop()
+        if folder:
+            if self.toast:
+                self.toast.set_saving()
+            self.watcher.start(folder)
+        else:
+            if self.toast:
+                self.toast.set_saved()
+            self.record("unchecked")
+
+    def on_clip_found(self, path):
+        log.info("clip saved: %s", path)
+        if self.toast:
+            self.toast.set_saved(Path(path).parent.name)
+        self.record("saved", path)
+
+    def on_clip_missing(self):
+        log.warning("no new clip appeared in Medal's folder")
+        if self.toast:
+            self.toast.set_failed(S["popup_seconds"])
+        else:
+            self.tray.showMessage("Clip didn't save", "Medal didn't make a clip. Check the hotkey on the Clipping "
+                                  "page matches Medal's.", self.icon, 6000)
+        self.record("failed")
+
+    def record(self, status, path=""):
+        self.history.append(clips.new_entry(self.moment or {}, status, path))
+        self.history = self.history[-clips.HISTORY_MAX:]
+        clips.save_history(self.history)
+        self.moment = None
+        self.history_changed.emit()
+
+    def clear_history(self):
+        self.history = []
+        clips.save_history(self.history)
+        self.history_changed.emit()
 
     def cancel_pending(self):
         if not self.pending:
@@ -393,6 +482,7 @@ class Controller(QObject):
 
     def test_toast(self):
         self.pending = None
+        self.moment = None
         self.show_toast("ask" if self.check_medal() else "nomedal", "Test", S["triggers"][0], test=True)
 
     # ----- updates -----
@@ -446,10 +536,44 @@ class Controller(QObject):
         self.act_medal.setVisible(not self.medal_ok)
         self.tray.setToolTip(f"Laugh Clipper\n{text}" + ("" if self.medal_ok else
                                                          "\nMedal isn't running, so clips won't save"))
+        state = self.status()
+        if state != "paused" and not self.medal_ok:
+            state = "warning"
+        self.tray.setIcon(self.tray_icon(state))
+
+    def tray_icon(self, state):
+        """The app icon as it is when listening, greyed out when paused, and with an orange dot when
+        it's waiting for a game or Medal isn't running."""
+        if state not in self.tray_icons:
+            if state == "listening":
+                icon = self.icon
+            else:
+                icon = QIcon()
+                for size in (16, 20, 24, 32, 40, 48, 64):
+                    icon.addPixmap(badged(self.icon.pixmap(size, size), state))
+            self.tray_icons[state] = icon
+        return self.tray_icons[state]
 
     def on_tray_activated(self, reason):
         if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
             self.show_window()
+
+    def show_setup(self):
+        """The setup guide (shown on first run, or from 'Run Setup Again' on the General page)."""
+        if self.setup is None:
+            from .setup_guide import SetupGuide
+            self.setup = SetupGuide(self)
+            self.setup.done.connect(self.on_setup_done)
+        self.setup.show()
+        self.setup.raise_()
+        self.setup.activateWindow()
+
+    def on_setup_done(self):
+        self.setup.deleteLater()
+        self.setup = None
+        if not (self.window and self.window.isVisible()):
+            self.tray.showMessage("Laugh Clipper is running", "It's in the system tray. Click the icon to open "
+                                  "the settings.", self.icon, 5000)
 
     def show_window(self):
         if self.window is None:
@@ -519,7 +643,9 @@ def run():
         conn.disconnected.connect(conn.deleteLater)
     server.newConnection.connect(on_connection)
 
-    if first_run or not ("--minimized" in sys.argv or S["start_minimized"]):
+    if first_run or not S["setup_done"]:
+        ctrl.show_setup()
+    elif not ("--minimized" in sys.argv or S["start_minimized"]):
         ctrl.show_window()
     ctrl.start()
     return app.exec()

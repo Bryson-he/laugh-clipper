@@ -43,7 +43,9 @@ class Toast(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
         self.setMouseTracking(True)
 
-        self.mode, self.prev = mode, None          # "ask" | "pending" | "saved" | "nomedal"
+        # "ask" | "pending" | "saving" | "saved" | "failed" | "nomedal"
+        self.mode, self.prev = mode, None
+        self.saved_sub = "Sent to Medal"
         self.source, self.hotkey = source, hotkey
         self.sound_name, self.still = SOUNDS.get(sound, SOUNDS["laughter"])[:2]
         self.surprised = sound in SURPRISED
@@ -96,38 +98,52 @@ class Toast(QWidget):
 
     @staticmethod
     def size_for(mode):
-        return (W_SAVED, H_SAVED) if mode == "saved" else (W_FULL, H_FULL)
+        return (W_SAVED, H_SAVED) if mode in ("saved", "saving") else (W_FULL, H_FULL)
 
     def showEvent(self, e):
         super().showEvent(e)
         winutil.no_activate(int(self.winId()))
 
     # ----- driven by the app -----
-    def set_saved(self):
-        if self.mode == "saved" or self.closing:
-            return
-        self.prev, self.mode = self.mode, "saved"
+    def _switch(self, mode):
+        """Morph into another mode: the old content fades out as the new one fades in."""
+        self.prev, self.mode = self.mode, mode
         self.swap.snap(0.0)
         self.swap.target = 1.0
-        self.w.target, self.h.target = W_SAVED, H_SAVED
+        self.w.target, self.h.target = self.size_for(mode)
+        self.scale.target = 1.0
+        self.press.target = 0.0
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def set_saving(self):
+        """The hotkey went to Medal; waiting for the clip file to appear."""
+        if self.mode in ("saving", "saved") or self.closing:
+            return
+        self._switch("saving")
+        self.close_at = None
+
+    def set_saved(self, game=None):
+        if self.mode == "saved" or self.closing:
+            return
+        self._switch("saved")
+        self.saved_sub = f"In Medal  ·  {game}" if game else "Sent to Medal"
         self.check.snap(0.0)
         self.check.target = 1.0
-        self.scale.target = 1.0
-        self.setCursor(Qt.CursorShape.ArrowCursor)
         self.close_at = self.t + 1.5
+
+    def set_failed(self, seconds):
+        """Medal didn't make a clip file."""
+        if self.mode == "failed" or self.closing:
+            return
+        self._switch("failed")
+        self.total = self.left = max(float(seconds), 0.1)
 
     def set_nomedal(self, seconds):
         """Medal closed before we could clip: say so instead of pretending to save."""
         if self.mode in ("saved", "nomedal") or self.closing:
             return
-        self.prev, self.mode = self.mode, "nomedal"
-        self.swap.snap(0.0)
-        self.swap.target = 1.0
-        self.w.target, self.h.target = self.size_for("nomedal")
+        self._switch("nomedal")
         self.total = self.left = max(float(seconds), 0.1)
-        self.scale.target = 1.0
-        self.press.target = 0.0
-        self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def set_pending(self, remaining, laughing, total, level):
         self.left = max(0.0, remaining)
@@ -154,7 +170,7 @@ class Toast(QWidget):
         for s in self.springs:
             s.step(dt)
         if not self.closing and not self.hover:
-            if self.mode in ("ask", "nomedal"):
+            if self.mode in ("ask", "nomedal", "failed"):
                 self.left -= dt
                 if self.left <= 0:
                     self.dismiss()
@@ -175,7 +191,8 @@ class Toast(QWidget):
         return self.pill.contains(pos)
 
     def _on_ring(self, pos):
-        return self.mode != "saved" and self.ring_rect.adjusted(-6, -6, 6, 6).contains(pos)
+        return (self.mode in ("ask", "pending", "nomedal", "failed")
+                and self.ring_rect.adjusted(-6, -6, 6, 6).contains(pos))
 
     def mouseMoveEvent(self, e):
         pos = e.position()
@@ -264,7 +281,7 @@ class Toast(QWidget):
         W, H = self.size_for(mode)
         rr = QRectF(center.x() - W / 2, center.y() - H / 2, W, H)
         cy = rr.center().y()
-        icon = 44 if mode != "saved" else 34
+        icon = 34 if mode in ("saved", "saving") else 44
         pad = (H - icon) / 2
         ic = QRectF(rr.left() + pad, cy - icon / 2, icon, icon)
         tx = ic.right() + 12
@@ -273,15 +290,21 @@ class Toast(QWidget):
             pop = 0.82 + 0.18 * clamp(self.check.value * 1.4)
             d = icon * pop
             draw_check_icon(p, QRectF(ic.center().x() - d / 2, ic.center().y() - d / 2, d, d), self.check.value)
-            self.draw_texts(p, tx, cy, rr.right() - pad - tx, "Clip saved", "Sent to Medal", None)
-        elif mode == "nomedal":
+            self.draw_texts(p, tx, cy, rr.right() - pad - tx, "Clip saved", self.saved_sub, None)
+        elif mode == "saving":
+            draw_spinner(p, ic, self.t)
+            self.draw_texts(p, tx, cy, rr.right() - pad - tx, "Saving clip", "Waiting for Medal…", None)
+        elif mode in ("nomedal", "failed"):
             draw_warning_icon(p, ic)
             ring_d = 30
             ring = QRectF(rr.right() - 22 - ring_d, cy - ring_d / 2, ring_d, ring_d)
             if live:
                 self.ring_rect = ring
-            self.draw_texts(p, tx, cy, ring.left() - 14 - tx, f"{self.sound_name} detected",
-                            "Medal isn't running, so no clip was saved", None)
+            if mode == "nomedal":
+                title, sub = f"{self.sound_name} detected", "Medal isn't running, so no clip was saved"
+            else:
+                title, sub = "Clip didn't save", "Medal didn't make a clip. Is the hotkey right?"
+            self.draw_texts(p, tx, cy, ring.left() - 14 - tx, title, sub, None)
             draw_ring(p, ring, clamp(self.left / self.total), self.hover_ring)
         else:
             draw_laugh_icon(p, ic, self.surprised)
@@ -397,6 +420,24 @@ def draw_warning_icon(p, r):
     p.setBrush(QColor("white"))
     p.drawRoundedRect(QRectF(c.x() - 2 * u, r.top() + 9 * u, 4 * u, 15 * u), 2 * u, 2 * u)
     p.drawEllipse(QPointF(c.x(), r.top() + 29.5 * u), 2.4 * u, 2.4 * u)
+
+
+def draw_spinner(p, r, t):
+    """Blue circle with a white arc going round, while we wait for Medal."""
+    g = QLinearGradient(r.topLeft(), r.bottomLeft())
+    g.setColorAt(0, QColor("#3d9bff"))
+    g.setColorAt(1, QColor("#0a6fe0"))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(g)
+    p.drawEllipse(r)
+    inner = r.adjusted(r.width() * 0.26, r.width() * 0.26, -r.width() * 0.26, -r.width() * 0.26)
+    w = r.width() * 0.085
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.setPen(QPen(QColor(255, 255, 255, 70), w))
+    p.drawEllipse(inner)
+    p.setPen(QPen(QColor("white"), w, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+    sweep = 70 + 40 * math.sin(t * 3.1)          # the arc breathes a little as it spins
+    p.drawArc(inner, int(-t * 420 * 16) % (360 * 16), int(sweep * 16))
 
 
 def draw_check_icon(p, r, prog):

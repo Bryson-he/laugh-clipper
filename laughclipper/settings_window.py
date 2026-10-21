@@ -1,19 +1,20 @@
 """The settings window, laid out like macOS System Settings."""
 
+from datetime import date, datetime
 from pathlib import Path
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import (QFileDialog, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu, QPushButton,
-                               QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QFileDialog, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu, QMessageBox,
+                               QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
-from . import winutil
+from . import clips, winutil
 from .config import DEFAULTS, S, clean_games, hotkey_label
-from .engine import SOUNDS, short_name
+from .engine import SOUNDS, short_name, sound_level
 from .theme import T
 from .version import VERSION
-from .widgets import (Group, KeyCap, LevelMeter, NavItem, PopupButton, PositionPicker, Row, Segmented, Slider,
-                      Switch, WarningBadge)
+from .widgets import (Chip, Collapsible, Disclosure, Group, KeyCap, LevelMeter, NavItem, PopupButton,
+                      PositionPicker, Row, Segmented, Slider, StatusPill, Switch, WarningBadge)
 
 PAGES = [
     ("General", "", "#8e8e93"),
@@ -21,6 +22,7 @@ PAGES = [
     ("Notification", "", "#ff3b30"),
     ("Clipping", "", "#5e5ce6"),
     ("Detection", "", "#34c759"),
+    ("History", "", "#ff9500"),
 ]
 
 
@@ -31,6 +33,18 @@ SOUND_HINTS = {
     "screaming": "Screams of fright or excitement.",
     "gasp": "A sharp breath in, like after a close call.",
 }
+
+
+def when(iso):
+    """'2026-10-21T21:09:18' -> 'Today, 9:09 PM' / 'Yesterday, 8:02 PM' / 'Mon 19 Oct, 9:52 PM'."""
+    try:
+        t = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return ""
+    clock = f"{t.hour % 12 or 12}:{t.minute:02d} {'AM' if t.hour < 12 else 'PM'}"
+    days = (date.today() - t.date()).days
+    day = "Today" if days == 0 else "Yesterday" if days == 1 else f"{t:%a} {t.day} {t:%b}"
+    return f"{day}, {clock}"
 
 
 def secs(v):
@@ -84,6 +98,103 @@ class Page(QScrollArea):
         return self
 
 
+class SoundOptions(QWidget):
+    """Under a 'Trigger on' row: that sound's own trigger level, and which audio it listens to."""
+    resized = Signal()
+
+    def __init__(self, ctrl, key):
+        super().__init__()
+        self.ctrl, self.key = ctrl, key
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 0, 14, 12)
+        lay.setSpacing(8)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self.level_label = QLabel()
+        self.level_label.setObjectName("secondary")
+        row.addWidget(self.level_label, 1)
+        self.reset = QPushButton("Reset")
+        self.reset.setObjectName("small")
+        self.reset.setToolTip("Use the main trigger level again")
+        self.reset.clicked.connect(self.reset_level)
+        row.addWidget(self.reset)
+        self.slider = Slider(0.05, 0.9, 0.01, sound_level(key))
+        self.slider.setFixedWidth(210)
+        self.slider.valueChanged.connect(self.level_moved)
+        row.addWidget(self.slider)
+        self.value = QLabel()
+        self.value.setObjectName("value")
+        self.value.setMinimumWidth(58)
+        self.value.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        row.addWidget(self.value)
+        lay.addLayout(row)
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+        lbl = QLabel("Listen to")
+        lbl.setObjectName("secondary")
+        lbl.setFixedWidth(70)
+        row.addWidget(lbl)
+        self.chip_box = QHBoxLayout()
+        self.chip_box.setSpacing(6)
+        row.addLayout(self.chip_box)
+        row.addStretch(1)
+        lay.addLayout(row)
+        self.chips = {}
+        self.chip_ids = []
+
+    def sources(self):
+        """The sources being listened to: [(id, label)]."""
+        out = [("mic", "Mic")] if S["listen_mic"] else []
+        return out + [(f"out:{n}", short_name(n)) for n in (S["outputs"] or [])]
+
+    def refresh(self):
+        own = self.key in S["sound_levels"]
+        level = sound_level(self.key)
+        self.slider.blockSignals(True)
+        self.slider.setValue(level)
+        self.slider.blockSignals(False)
+        self.value.setText(f"{level:.2f}")
+        self.level_label.setText("Trigger level" if own else "Trigger level  ·  same as the main one")
+        self.reset.setVisible(own)
+
+        srcs = self.sources()
+        if [i for i, _ in srcs] != self.chip_ids:
+            for chip in self.chips.values():
+                self.chip_box.removeWidget(chip)
+                chip.deleteLater()
+            self.chips = {}
+            for sid, label in srcs:
+                chip = Chip(label)
+                chip.toggled.connect(lambda on, sid=sid: self.toggle_source(sid, on))
+                self.chip_box.addWidget(chip)
+                self.chips[sid] = chip
+            self.chip_ids = [i for i, _ in srcs]
+            if not srcs:
+                self.chip_ids = []
+            self.resized.emit()
+        allowed = S["sound_sources"].get(self.key)
+        for sid, chip in self.chips.items():
+            chip.set_silent(allowed is None or sid in allowed)
+
+    def level_moved(self, v):
+        self.ctrl.set("sound_levels", {**S["sound_levels"], self.key: round(v, 2)})
+
+    def reset_level(self):
+        self.ctrl.set("sound_levels", {k: v for k, v in S["sound_levels"].items() if k != self.key})
+
+    def toggle_source(self, sid, on):
+        chosen = [i for i, chip in self.chips.items() if chip.isChecked()]
+        if not chosen:                          # it has to listen to something
+            self.chips[sid].set_silent(True)
+            return
+        others = {k: v for k, v in S["sound_sources"].items() if k != self.key}
+        if len(chosen) < len(self.chips):
+            others[self.key] = chosen
+        self.ctrl.set("sound_sources", others)
+
+
 class SettingsWindow(QWidget):
     def __init__(self, ctrl):
         super().__init__()
@@ -129,7 +240,7 @@ class SettingsWindow(QWidget):
 
         self.stack = QStackedWidget()
         builders = [self.page_general, self.page_audio, self.page_notification, self.page_clipping,
-                    self.page_detection]
+                    self.page_detection, self.page_history]
         self.nav = []
         for i, ((title, glyph, color), build) in enumerate(zip(PAGES, builders)):
             item = NavItem(title, glyph, color)
@@ -151,6 +262,7 @@ class SettingsWindow(QWidget):
         ctrl.changed.connect(self.on_setting_changed)
         ctrl.devices_changed.connect(self.build_devices)
         ctrl.update_changed.connect(self.on_update)
+        ctrl.history_changed.connect(self.build_history)
         T.changed.connect(self.apply_titlebar)
         QGuiApplication.instance().screenAdded.connect(lambda *_: self.refresh_displays())
         QGuiApplication.instance().screenRemoved.connect(lambda *_: self.refresh_displays())
@@ -239,6 +351,9 @@ class SettingsWindow(QWidget):
         g.add(Row("Start with Windows", None, self.startup_sw))
         g.add(Row("Start in the tray", "Don't open this window when Laugh Clipper starts.",
                   self.switch("start_minimized")))
+        setup = QPushButton("Run Setup Again")
+        setup.clicked.connect(self.ctrl.show_setup)
+        g.add(Row("Setup guide", "Hotkey, audio and a quick laugh to set the trigger level.", setup))
         g = p.section("Updates")
         self.upd_btn = QPushButton("Check for Updates")
         self.upd_btn.clicked.connect(self.update_clicked)
@@ -303,18 +418,39 @@ class SettingsWindow(QWidget):
         self.maxwait_row = self.slider_row(g, "Save anyway after", "In case the laughing just won't stop.",
                                            "max_wait", 0, 120, 5, lambda v: "Never" if v == 0 else secs(v))
         self.update_auto_rows()
+
+        g = p.section("Clip check", footer="After the hotkey, Laugh Clipper looks for the new clip in Medal's "
+                                           "folder, so the popup only says “Clip saved” when it really was.")
+        g.add(Row("Check that Medal saved the clip", None, self.switch("confirm_clips")))
+        choose = QPushButton("Choose…")
+        choose.clicked.connect(self.choose_clips_folder)
+        self.auto_folder_btn = QPushButton("Find It")
+        self.auto_folder_btn.setObjectName("small")
+        self.auto_folder_btn.setToolTip("Find Medal's clips folder automatically")
+        self.auto_folder_btn.clicked.connect(lambda: self.ctrl.set("clips_folder", ""))
+        self.folder_row = g.add(Row("Medal's clips folder", "", self.auto_folder_btn, choose))
+        self.update_folder_row()
         return p.finish()
 
     def page_detection(self):
         p = Page("Detection")
         g = p.section("Trigger on", footer="Laughter is the most reliable. Shouting and screaming can also "
-                                           "pick up loud game audio, so try them on your mic first.")
-        self.trigger_sw = {}
+                                           "pick up loud game audio. Use the arrow to give a sound its own "
+                                           "trigger level, or to only listen for it on your mic.")
+        self.trigger_sw, self.sound_opts = {}, {}
         for key, (name, _, _) in SOUNDS.items():
             sw = Switch(key in S["triggers"])
             sw.toggled.connect(lambda on, key=key: self.toggle_trigger(key, on))
             self.trigger_sw[key] = sw
-            g.add(Row(name, SOUND_HINTS.get(key), sw))
+            more = Disclosure()
+            more.setToolTip(f"{name} options")
+            g.add(Row(name, SOUND_HINTS.get(key), more, sw))
+            opts = SoundOptions(self.ctrl, key)
+            panel = g.add(Collapsible(opts))
+            more.toggled.connect(lambda on, panel=panel: panel.set_open(on))
+            opts.resized.connect(panel.refresh)
+            self.sound_opts[key] = (more, panel, opts)
+        self.update_sound_opts()
         g = p.section(footer="Watch the live score while you laugh, then set the trigger just below where "
                              "it usually peaks.")
         self.live_meter = LevelMeter(210)
@@ -330,6 +466,73 @@ class SettingsWindow(QWidget):
         self.slider_row(g, "Wait between prompts", "Stops it asking again straight away.",
                         "cooldown", 0, 120, 5, secs)
         return p.finish()
+
+    def page_history(self):
+        p = Page("History")
+        clear = QPushButton("Clear")
+        clear.setObjectName("small")
+        clear.clicked.connect(self.clear_history)
+        self.history_group = p.section("Recent clips", header_widget=clear,
+                                       footer="Clips that Laugh Clipper saved for you, newest first. Clearing the "
+                                              "list doesn't delete any clips from Medal.")
+        self.build_history()
+        return p.finish()
+
+    # ---------------------------------------------------------- clips + history
+    def update_folder_row(self):
+        folder = clips.clips_folder()
+        chosen = bool(S["clips_folder"])
+        if folder:
+            self.folder_row.set_sub(str(folder) + ("" if chosen else "  ·  found automatically"))
+        elif chosen:
+            self.folder_row.set_sub(f"{S['clips_folder']} doesn't exist. Choose another folder.")
+        else:
+            self.folder_row.set_sub("Couldn't find it. Choose the folder Medal saves clips to.")
+        self.auto_folder_btn.setVisible(chosen)
+        self.folder_row.setEnabled(S["confirm_clips"])
+
+    def choose_clips_folder(self):
+        start = str(clips.clips_folder() or "")
+        path = QFileDialog.getExistingDirectory(self, "Medal's Clips Folder", start)
+        if path:
+            self.ctrl.set("clips_folder", str(Path(path)))
+
+    def clear_history(self):
+        if not self.ctrl.history:
+            return
+        box = QMessageBox(QMessageBox.Icon.Question, "Clear History",
+                          "Clear the list of clips? Your clips stay in Medal.",
+                          QMessageBox.StandardButton.Cancel, self)
+        clear = box.addButton("Clear", QMessageBox.ButtonRole.DestructiveRole)
+        box.exec()
+        if box.clickedButton() is clear:
+            self.ctrl.clear_history()
+
+    def build_history(self):
+        g = self.history_group
+        g.clear()
+        items = list(reversed(self.ctrl.history))[:100]
+        if not items:
+            g.add(Row("No clips yet", "Clips Laugh Clipper saves for you will show up here."))
+        for it in items:
+            name = SOUNDS.get(it.get("sound"), ("Laughter",))[0]
+            title = f"{name}  ·  {it['game']}" if it.get("game") else name
+            score = it.get("score") or 0
+            sub = "  ·  ".join(x for x in (when(it["time"]), it.get("source", ""),
+                                           f"score {score:.2f}" if score else "", "auto-saved" if it.get("auto") else "")
+                               if x)
+            status = it.get("status")
+            pill = {"saved": StatusPill("Saved", "green"), "failed": StatusPill("Didn't save", "orange")}.get(
+                status, StatusPill("Not checked", "secondary"))
+            right = [pill]
+            if status == "saved" and it.get("file") and Path(it["file"]).exists():
+                show = QPushButton("Show")
+                show.setObjectName("small")
+                show.setToolTip(it["file"])
+                show.clicked.connect(lambda _=False, f=it["file"]: winutil.reveal(f))
+                right.append(show)
+            g.add(Row(title, sub, *right))
+        g.update()
 
     # ---------------------------------------------------------- games
     def build_games(self):
@@ -413,6 +616,14 @@ class SettingsWindow(QWidget):
             self.out_rows[n] = (row, meter, n in spks)
         self.out_group.update()
 
+    def update_sound_opts(self):
+        for key, (more, panel, opts) in self.sound_opts.items():
+            on = key in S["triggers"]
+            more.setEnabled(on)
+            if not on and more.isChecked():
+                more.setChecked(False)
+            opts.refresh()
+
     def toggle_trigger(self, key, on):
         triggers = [k for k in SOUNDS if (k == key and on) or (k != key and k in S["triggers"])]
         if not triggers:                       # keep at least one sound on
@@ -449,8 +660,9 @@ class SettingsWindow(QWidget):
         if top == "paused":
             return "Waiting for a game"
         text = f"Hearing: {top}"
-        if isinstance(lvl, float) and lvl >= 0.05:
-            text += f"  ·  {SOUNDS[eng.sound.get(key, 'laughter')][0].lower()} {lvl:.2f}"
+        sound, score = eng.sound.get(key, (None, 0.0))
+        if sound and score >= 0.05:
+            text += f"  ·  {SOUNDS[sound][0].lower()} {score:.2f}"
         return text
 
     def display_level(self, key):
@@ -510,6 +722,9 @@ class SettingsWindow(QWidget):
             self.game_row.set_sub("Off, so it listens all the time.")
         elif game:
             self.game_row.set_sub(f"{game} is in front, so it's listening.")
+        elif self.ctrl.tuning:
+            self.game_row.set_sub("No game in front, but it listens while this window is open so you can "
+                                  "test it.")
         else:
             self.game_row.set_sub("No game in front, so detection is waiting.")
 
@@ -527,6 +742,10 @@ class SettingsWindow(QWidget):
         if key == "triggers":
             for k, sw in self.trigger_sw.items():
                 sw.set_silent(k in S["triggers"])
+        if key in ("triggers", "threshold", "sound_levels", "sound_sources", "listen_mic", "outputs"):
+            self.update_sound_opts()
+        if key in ("clips_folder", "confirm_clips"):
+            self.update_folder_row()
         if key == "hotkey":
             self.keycap.recording = False
             self.keycap.set_label(hotkey_label())

@@ -50,6 +50,9 @@ The popup never steals focus from your game, and it doesn't send anything to Med
 Pick what counts as a moment worth clipping: **laughter, cheering, shouting, screaming or gasps**. The popup tells you
 what it heard and where it heard it: your mic, game audio or voice chat.
 
+Each sound can have its own trigger level and its own sources. For example, listen for shouting only on your mic and
+voice chat, so explosions in the game don't set it off.
+
 <div align="center">
 <img src="docs/images/popups.png" width="560" alt="Popups for cheering, screaming, auto-save and the Medal warning">
 </div>
@@ -84,14 +87,28 @@ your friends but ignore your music.
 </picture>
 </div>
 
-### ⚠️ Tells you when Medal isn't running
+### ✅ Knows when a clip really saved
 
-If Medal is closed, Laugh Clipper says so (in the popup, the tray and the settings window) instead of pretending
-it saved a clip. One click on **Open Medal** starts it again.
+After pressing Medal's hotkey, Laugh Clipper watches Medal's clips folder and only says **Clip saved** once the new
+clip is actually there. If Medal didn't make one (say the hotkey doesn't match), it tells you instead of pretending.
+And if Medal isn't running at all, it warns you before you need it, with an **Open Medal** button.
+
+Every clip goes into the **History** page: what was heard, where, in which game, and whether it saved, with a
+button to jump straight to the file.
+
+<div align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-history-dark.png">
+  <img src="docs/images/settings-history-light.png" width="720" alt="History page listing recent clips">
+</picture>
+</div>
 
 ### ✨ And the rest
 
+- **Quick setup:** a short guide on first launch sets your Medal hotkey and audio, and finds the right trigger level
+  from a few seconds of laughing.
 - **Tune it to your voice:** watch the live score while you laugh, then set the trigger level just below it.
+- **Tray icon shows what it's doing:** grey when paused, an orange dot when it's waiting for a game or Medal is closed.
 - **Put the popup anywhere:** any corner or edge of any monitor, and choose how long it stays up.
 - **Looks at home on Windows 11:** follows your light or dark mode, with smooth, springy animations.
 - **Starts with Windows** and lives in the system tray.
@@ -107,6 +124,8 @@ it saved a clip. One click on **Open Medal** starts it again.
 | **Detection:** what to listen for, and how sensitive it is | **Clipping:** your Medal hotkey and auto-save |
 | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-notification-dark.png"><img src="docs/images/settings-notification-light.png" alt="Notification settings"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-general-dark.png"><img src="docs/images/settings-general-light.png" alt="General settings"></picture> |
 | **Notification:** which monitor, where, and for how long | **General:** games, startup and updates |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-audio-dark.png"><img src="docs/images/settings-audio-light.png" alt="Audio settings"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-history-dark.png"><img src="docs/images/settings-history-light.png" alt="History"></picture> |
+| **Audio:** your mic and PC audio, with live meters | **History:** every clip, and whether it saved |
 
 </details>
 
@@ -120,6 +139,8 @@ it saved a clip. One click on **Open Medal** starts it again.
 You'll also need [Medal](https://medal.tv) installed and running, since it's what actually records the clips.
 
 ## Getting started
+
+The setup guide walks you through this on first launch (and any time from **General → Run Setup Again**):
 
 1. **Match the hotkey.** On the **Clipping** page, click the key and press the same clip hotkey you use in Medal.
 2. **Pick what to listen to.** On the **Audio** page, turn on your mic and the outputs your game and voice chat
@@ -194,6 +215,13 @@ py -3.12 -m venv .venv
 
 `build_local.bat` builds `dist\LaughClipper\LaughClipper.exe` on your own PC (no installer, no auto-updates).
 
+**Tests** run offscreen with fake audio, games and Medal, and on GitHub for every push:
+
+```
+.venv\Scripts\python -m pip install -r requirements-dev.txt
+.venv\Scripts\python -m pytest
+```
+
 **Releasing:** write the notes in `release-notes/vX.Y.Z.md`, commit, then tag and push:
 
 ```
@@ -205,7 +233,7 @@ GitHub Actions builds the app and the installer and publishes the release. Insta
 hours, or straight away with **Check for Updates**.
 
 **README images** are rendered from the real app: `.venv\Scripts\python tools\make_readme_media.py` (needs
-`pillow`).
+`pillow`, which `requirements-dev.txt` installs).
 
 | Path | What it is |
 |---|---|
@@ -214,9 +242,12 @@ hours, or straight away with **Check for Updates**.
 | `laughclipper/toast.py` | The animated popup |
 | `laughclipper/settings_window.py`, `widgets.py`, `theme.py` | Settings window and hand-painted controls |
 | `laughclipper/updater.py` | Checks GitHub Releases and installs updates |
+| `laughclipper/clips.py` | Checks Medal saved each clip, and the clip history |
+| `laughclipper/setup_guide.py` | The first-run setup guide |
 | `laughclipper/winutil.py` | Windows bits: startup, foreground app, process checks |
 | `LaughClipper.spec`, `installer/LaughClipper.iss` | PyInstaller build and Inno Setup installer |
-| `.github/workflows/release.yml` | Builds and publishes releases |
+| `.github/workflows/release.yml`, `tests.yml` | Builds and publishes releases; runs the tests |
+| `tests/` | pytest tests (settings, triggers, games, clipping, clip check, setup guide) |
 
 </details>
 

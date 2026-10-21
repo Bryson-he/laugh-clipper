@@ -1,5 +1,6 @@
 """Settings, paths and small shared helpers."""
 
+import copy
 import json
 import logging
 import os
@@ -33,6 +34,8 @@ DEFAULTS = {
     "clip_delay": 10,          # auto-save: seconds to wait after the laughing stops
     "max_wait": 30,            # auto-save: save anyway this long after the laugh started (0 = never)
     "medal_check": True,       # warn (and don't pretend to save) when Medal isn't running
+    "confirm_clips": True,     # after the hotkey, check a new clip appears in Medal's folder
+    "clips_folder": "",        # Medal's clips folder; "" = find it (X:\Medal\Clips)
     # games
     "game_only": False,        # only listen while a game is the window in front
     "games": [],               # [{"exe": "rocketleague.exe", "name": "Rocket League"}]
@@ -41,16 +44,19 @@ DEFAULTS = {
     "ignored_games": [],       # exe names removed by hand, so auto-add leaves them out
     # detection
     "triggers": ["laughter"],  # sounds that trigger a clip (keys of engine.SOUNDS)
+    "sound_levels": {},        # sound -> its own trigger level; missing = use "threshold"
+    "sound_sources": {},       # sound -> sources it listens to ("mic", "out:<device>"); missing = all
     "threshold": 0.30,
     "min_laugh": 1.0,          # seconds of laughing needed to trigger
     "pause_tolerance": 1.5,    # a pause shorter than this still counts as the same laugh
     "cooldown": 20,
     "silence_level": 0.0015,
     # app
+    "setup_done": False,       # the first-run setup guide has been seen
     "start_minimized": False,
     "check_updates": True,
 }
-S = dict(DEFAULTS)
+S = copy.deepcopy(DEFAULTS)     # deep, so the dicts and lists in it aren't shared with DEFAULTS
 
 
 def resource(rel):
@@ -73,12 +79,22 @@ def load():
             continue
         if "hits_needed" in data and "min_laugh" not in data:
             data["min_laugh"] = data["hits_needed"] * 0.5
+        if "setup_done" not in data:
+            data["setup_done"] = True      # set up before the guide existed: don't show it to them
         S.update({k: v for k, v in data.items() if k in DEFAULTS})
         S["silence_level"] = min(S["silence_level"], DEFAULTS["silence_level"])
         from .engine import SOUNDS
         triggers = S["triggers"] if isinstance(S["triggers"], list) else []
         S["triggers"] = [k for k in SOUNDS if k in triggers] or list(DEFAULTS["triggers"])
+        levels = S["sound_levels"] if isinstance(S["sound_levels"], dict) else {}
+        S["sound_levels"] = {k: min(max(float(v), 0.05), 0.9) for k, v in levels.items()
+                             if k in SOUNDS and isinstance(v, (int, float)) and not isinstance(v, bool)}
+        sources = S["sound_sources"] if isinstance(S["sound_sources"], dict) else {}
+        S["sound_sources"] = {k: [s for s in v if isinstance(s, str)] for k, v in sources.items()
+                              if k in SOUNDS and isinstance(v, list) and any(isinstance(s, str) for s in v)}
         S["games"] = clean_games(S["games"])
+        if not isinstance(S["clips_folder"], str):
+            S["clips_folder"] = ""
         S["ignored_games"] = [g["exe"] for g in clean_games(S["ignored_games"])]
         if path != SETTINGS_PATH:
             save()

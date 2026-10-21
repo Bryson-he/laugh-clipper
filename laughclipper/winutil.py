@@ -143,7 +143,9 @@ def migrate_startup():
             had_legacy = True
     except OSError:
         pass
-    if had_legacy or startup_enabled():
+    # only the installed app keeps the entry pointing at itself; a run from source or a local build
+    # mustn't take over the startup entry of the copy that's installed
+    if had_legacy or (startup_enabled() and getattr(sys, "frozen", False) and "\\Programs\\" in sys.executable):
         set_startup(True)
 
 
@@ -221,6 +223,13 @@ def process_running(exe):
         return False
     finally:
         _kernel32.CloseHandle(snap)
+
+
+def reveal(path):
+    """Open Explorer with the file selected."""
+    if IS_WIN:
+        import subprocess
+        subprocess.Popen(["explorer", "/select,", os.path.normpath(path)])
 
 
 def medal_path():

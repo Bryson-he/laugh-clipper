@@ -64,9 +64,10 @@ class Spring:
 class AnimDriver(QObject):
     """Steps a widget's springs at ~60 fps, only while something is moving."""
 
-    def __init__(self, owner):
+    def __init__(self, owner, on_step=None):
         super().__init__(owner)
         self.owner = owner
+        self.on_step = on_step      # called after each step, for animations that change more than paint
         self.springs = []
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
@@ -93,6 +94,8 @@ class AnimDriver(QObject):
             for s in self.springs:
                 s.snap()
             self.timer.stop()
+        if self.on_step:
+            self.on_step()
         self.owner.update()
 
 
@@ -382,6 +385,155 @@ class LevelMeter(QWidget):
         x = w * self.threshold
         p.setBrush(with_alpha(T.c("text"), 0.55))
         p.drawRoundedRect(QRectF(x - 1, cy - 6, 2, 12), 1, 1)
+
+
+class Disclosure(QAbstractButton):
+    """Round chevron button that turns to point down when its section is open."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setCursor(POINTER)
+        self.setFixedSize(28, 28)
+        self.anim = AnimDriver(self)
+        self.turn = self.anim.spring(0.0, 0.32, 0.82)
+        self.toggled.connect(lambda on: self.anim.to(self.turn, 1.0 if on else 0.0))
+
+    def enterEvent(self, e):
+        super().enterEvent(e)
+        self.update()
+
+    def leaveEvent(self, e):
+        super().leaveEvent(e)
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(AA)
+        if not self.isEnabled():
+            p.setOpacity(0.35)
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        if self.underMouse() and self.isEnabled():
+            p.setPen(NO_PEN)
+            p.setBrush(T.c("hover"))
+            p.drawEllipse(r)
+        p.translate(r.center())
+        p.rotate(90 * self.turn.value)
+        p.setPen(QPen(T.c("secondary"), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
+                      Qt.PenJoinStyle.RoundJoin))
+        p.drawPolyline(QPolygonF([QPointF(-2.2, -4.5), QPointF(2.6, 0), QPointF(-2.2, 4.5)]))
+
+
+class Chip(QAbstractButton):
+    """Toggle capsule: filled with the accent colour when on."""
+
+    def __init__(self, text, checked=False, parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setChecked(checked)
+        self.setText(text)
+        self.setCursor(POINTER)
+        fm = QFontMetricsF(T.font(12, 600))
+        self.setFixedSize(int(fm.horizontalAdvance(text) + 28), 26)
+        self.anim = AnimDriver(self)
+        self.on = self.anim.spring(1.0 if checked else 0.0, 0.25, 0.9)
+        self.press = self.anim.spring(0.0, 0.18, 1.0)
+        self.toggled.connect(lambda on: self.anim.to(self.on, 1.0 if on else 0.0))
+
+    def set_silent(self, on):
+        self.blockSignals(True)
+        self.setChecked(on)
+        self.blockSignals(False)
+        self.on.snap(1.0 if on else 0.0)
+        self.update()
+
+    def mousePressEvent(self, e):
+        self.anim.to(self.press, 1.0)
+        super().mousePressEvent(e)
+
+    def mouseReleaseEvent(self, e):
+        self.anim.to(self.press, 0.0)
+        super().mouseReleaseEvent(e)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(AA)
+        if not self.isEnabled():
+            p.setOpacity(0.4)
+        t = clamp(self.on.value)
+        k = 1 - 0.05 * self.press.value
+        r = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        r = QRectF(r.center().x() - r.width() * k / 2, r.center().y() - r.height() * k / 2, r.width() * k,
+                   r.height() * k)
+        p.setPen(NO_PEN)
+        p.setBrush(blend(T.c("control"), T.c("accent"), t))
+        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        p.setFont(T.font(12, 600))
+        p.setPen(blend(T.c("text"), QColor("white"), t))
+        p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.text())
+
+
+class Collapsible(QWidget):
+    """Holds a widget and springs open/closed to its natural height."""
+
+    def __init__(self, content, parent=None):
+        super().__init__(parent)
+        self.content = content
+        content.setParent(self)      # not in a layout: it keeps its full height and gets clipped while opening
+        self.anim = AnimDriver(self, self._resize)
+        self.open = self.anim.spring(0.0, 0.38, 0.92)
+        self.setFixedHeight(0)
+        self.hide()
+
+    def set_open(self, on, animate=True):
+        if on:
+            self.show()
+        if animate:
+            self.anim.to(self.open, 1.0 if on else 0.0)
+        else:
+            self.open.snap(1.0 if on else 0.0)
+            self._resize()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.content.setGeometry(0, 0, self.width(), self.content.sizeHint().height())
+
+    def refresh(self):
+        """Call after the content changes size."""
+        self._resize()
+
+    def _resize(self):
+        f = clamp(self.open.value, 0.0, 1.2)
+        self.setFixedHeight(max(0, round(self.content.sizeHint().height() * f)))
+        self.content.setGeometry(0, 0, self.width(), self.content.sizeHint().height())
+        if self.open.target == 0 and not self.anim.timer.isActive():
+            self.hide()
+        if self.parentWidget():
+            self.parentWidget().update()
+
+
+class StatusPill(QWidget):
+    """Small tinted capsule with a dot and a word, like 'Saved' or "Didn't save"."""
+
+    def __init__(self, text, color_key, parent=None):
+        super().__init__(parent)
+        self.text, self.color_key = text, color_key
+        fm = QFontMetricsF(T.font(11, 600))
+        self.setFixedSize(int(fm.horizontalAdvance(text) + 30), 22)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(AA)
+        c = T.c(self.color_key)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        p.setPen(NO_PEN)
+        p.setBrush(with_alpha(c, 0.16))
+        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        p.setBrush(c)
+        p.drawEllipse(QPointF(r.left() + 11, r.center().y()), 3.2, 3.2)
+        p.setFont(T.font(11, 600))
+        p.setPen(c if self.color_key != "secondary" else T.c("text"))
+        p.drawText(r.adjusted(19, 0, -8, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.text)
 
 
 class WarningBadge(QWidget):

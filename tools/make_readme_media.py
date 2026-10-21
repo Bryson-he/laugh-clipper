@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import types
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -68,8 +69,26 @@ LIVE = {("mic", ""): (0.64, "laughter", "Laughter"),
         ("out", SPEAKERS[1]): (0.38, "laughter", "Giggle")}
 for key, (level, sound, heard) in LIVE.items():
     eng.threads[key] = threading.Event()
-    eng.levels[key], eng.sound[key], eng.heard[key] = level, sound, (heard, 0.05)
+    eng.levels[key], eng.sound[key], eng.heard[key] = level, (sound, level), (heard, 0.05)
 ctrl.check_game()
+S["sound_levels"] = {"cheering": 0.4}
+S["sound_sources"] = {"cheering": ["mic", f"out:{SPEAKERS[1]}"]}
+
+# a few clips for the History page ("Show" only appears for files that exist)
+CLIPS = Path(os.environ["APPDATA"]) / "Clips" / "Rocket League"
+CLIPS.mkdir(parents=True)
+now = datetime.now().replace(second=0)
+ctrl.history = []
+for minutes, sound, source, game, score, auto, status in [
+        (2 * 1440 + 200, "laughter", "Your mic", "Minecraft", 0.44, False, "saved"),
+        (1440 + 65, "screaming", "Game", "", 0.38, True, "failed"),
+        (52, "cheering", "Voice Chat", "Rocket League", 0.71, True, "saved"),
+        (3, "laughter", "Voice Chat", "Rocket League", 0.62, True, "saved")]:
+    f = CLIPS / f"clip{minutes}.mp4"
+    f.write_bytes(b"")
+    ctrl.history.append({"time": (now - timedelta(minutes=minutes)).isoformat(timespec="seconds"), "sound": sound,
+                         "source": source, "game": game, "score": score, "auto": auto, "status": status,
+                         "file": str(f) if status == "saved" else ""})
 
 
 # ---------------------------------------------------------------- helpers
@@ -170,6 +189,10 @@ def set_theme(dark):
 def window_shots():
     w = settings_window.SettingsWindow(ctrl)
     w.build_devices(MICS, SPEAKERS, SPEAKERS[0])
+    more, panel, _ = w.sound_opts["cheering"]          # show off the per-sound options
+    more.setChecked(True)
+    more.turn.snap(1.0)
+    panel.set_open(True, animate=False)
     w.show()
     shots = {}
     for dark in (True, False):
@@ -223,7 +246,7 @@ def animate(name, t, script, tail=0.7):
 
 
 def popup_clip():
-    """'Laugh detected' springs open, the Clip button is pressed, it morphs into 'Clip saved'."""
+    """'Laugh detected' springs open, Clip is pressed, it waits for Medal's file, then shows 'Clip saved'."""
     t = make_toast("ask", "Voice Chat", "laughter")
     state = {}
 
@@ -236,7 +259,10 @@ def popup_clip():
             state["clicked"] = True
             t.press.target = 0.0
             t.hover = False
-            t.set_saved()
+            t.set_saving()
+        elif now >= 3.0 and "saved" not in state:
+            state["saved"] = True
+            t.set_saved("Rocket League")
     animate("popup-clip.webp", t, script)
 
 
@@ -251,16 +277,19 @@ def popup_autosave():
             t.set_pending(total, True, total, 0.75)
         elif now < 2.4 + total:
             t.set_pending(total - (now - 2.4), False, total, 0.0)
-        elif "saved" not in state:
+        elif "saving" not in state:
+            state["saving"] = True
+            t.set_saving()
+        elif now >= 2.4 + total + 0.9 and "saved" not in state:
             state["saved"] = True
-            t.set_saved()
+            t.set_saved("Rocket League")
     animate("popup-autosave.webp", t, script)
 
 
 def popup_gallery():
     """Still frames of the different popups, stacked on one card."""
     items = [("ask", "Game", "cheering"), ("ask", "Your mic", "screaming"),
-             ("pending", "Voice Chat", "laughter"), ("nomedal", "Game", "laughter")]
+             ("pending", "Voice Chat", "laughter"), ("saved", "Game", "laughter"), ("nomedal", "Game", "laughter")]
     gap, top = 84, 18
     h = top * 2 + gap * (len(items) - 1) + 76 + 36
     img = canvas(CARD_W, h)
@@ -269,6 +298,10 @@ def popup_gallery():
     backdrop(p, QRectF(0, 0, CARD_W, h))
     for i, (mode, source, sound) in enumerate(items):
         t = make_toast(mode, source, sound, 8)
+        if mode == "saved":
+            t.saved_sub = "In Medal  ·  Rocket League"
+            t.check.snap(1.0)
+            t.close_at = None
         if mode == "pending":
             t.set_pending(5, True, 8, 0.7)
         run(t, 1.4)

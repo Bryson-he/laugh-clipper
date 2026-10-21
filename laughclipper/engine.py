@@ -8,7 +8,7 @@ import threading
 import time
 import urllib.request
 import warnings
-from collections import deque
+from collections import Counter, deque
 
 import numpy as np
 from PySide6.QtCore import QObject, Signal
@@ -105,11 +105,52 @@ def classify(classifier, samples):
     return scores, top
 
 
-def best_sound(scores):
-    """The strongest of the sounds we're triggering on: (key, score)."""
-    keys = [k for k in S["triggers"] if k in scores] or ["laughter"]
-    k = max(keys, key=lambda k: scores[k])
-    return k, scores[k]
+def source_id(key):
+    """How a source is named in the `sound_sources` setting: "mic", or "out:<device name>"."""
+    return "mic" if key[0] == "mic" else f"out:{key[1]}"
+
+
+def sound_level(sound):
+    """The trigger level for one sound: its own, or the main one from the Detection page."""
+    return S["sound_levels"].get(sound, S["threshold"])
+
+
+def judge(scores, source):
+    """Of the sounds we trigger on that listen to this source, which stands out most?
+    Returns (sound, its score, strength). Strength is the score divided by that sound's trigger level,
+    so 1.0 or more is a hit whatever each level is. sound is None if nothing listens to this source."""
+    best = (None, 0.0, 0.0)
+    for k in S["triggers"]:
+        allowed = S["sound_sources"].get(k)
+        if k not in scores or (allowed is not None and source not in allowed):
+            continue
+        strength = scores[k] / max(sound_level(k), 0.01)
+        if best[0] is None or strength > best[2]:
+            best = (k, scores[k], strength)
+    return best
+
+
+class TriggerWindow:
+    """Fires when ~75% of the last `need` windows were hits, so one quiet breath in the middle of a
+    laugh doesn't reset it."""
+
+    def __init__(self):
+        self.recent = deque()
+
+    def clear(self):
+        self.recent.clear()
+
+    def feed(self, hit, need):
+        """hit: the sound heard in this window, or None. Returns the sound heard most when it fires."""
+        need = max(1, need)
+        self.recent.append(hit)
+        while len(self.recent) > need:
+            self.recent.popleft()
+        hits = [s for s in self.recent if s]
+        if len(self.recent) == need and self.recent[-1] and len(hits) >= math.ceil(need * 0.75):
+            self.recent.clear()
+            return Counter(hits).most_common(1)[0][0]
+        return None
 
 
 class Engine(QObject):
@@ -120,7 +161,7 @@ class Engine(QObject):
         super().__init__()
         self.threads = {}    # key -> stop Event
         self.levels = {}     # key -> latest trigger score, or "loading" / "error"
-        self.sound = {}      # key -> which sound that score is for
+        self.sound = {}      # key -> (which sound that score is for, its raw score)
         self.heard = {}      # key -> (top sound, volume)
         self.activity = {}   # key -> last time the score was above the keep-alive level
         self.gated = False   # True while waiting for a game: keep recording, but don't classify
@@ -201,7 +242,7 @@ class Engine(QObject):
                 if dev is None:
                     raise RuntimeError("device not found")
             except Exception as e:
-                log.warning("[%s] couldn't start: %s", label, e)
+                log.warning("[%s] couldn't start: %s %s", label, type(e).__name__, e)
                 if not stop.is_set():
                     self.levels[key] = "error"
                 stop.wait(3)
@@ -210,7 +251,8 @@ class Engine(QObject):
             log.info("listening on: %s", dev.name)
             window = np.zeros(SR, dtype=np.float32)
             hop_n = int(SR * HOP)
-            recent = deque()
+            trigger = TriggerWindow()
+            source = source_id(key)
             try:
                 with dev.recorder(samplerate=SR) as rec:
                     while not stop.is_set():
@@ -218,43 +260,33 @@ class Engine(QObject):
                         mono = (block.mean(axis=1) if block.ndim > 1 else block).astype(np.float32)
                         window = np.concatenate([window[len(mono):], mono])
                         vol = float(np.sqrt(np.mean(mono ** 2)))
-                        need = max(1, round(S["min_laugh"] / HOP))
 
                         if self.gated:
                             self.levels[key] = 0.0
                             self.heard[key] = ("paused", vol)
-                            recent.clear()
+                            trigger.clear()
                             continue
                         if float(np.sqrt(np.mean(window ** 2))) < S["silence_level"]:
                             self.levels[key] = 0.0
                             self.heard[key] = ("silence", vol)
-                            recent.clear()
+                            trigger.clear()
                             continue
 
                         scores, top = classify(classifier, window)
                         if stop.is_set():
                             break
-                        sound, score = best_sound(scores)
-                        self.levels[key] = score
-                        self.sound[key] = sound
+                        sound, score, strength = judge(scores, source)
+                        self.levels[key] = strength * S["threshold"]    # meters show every sound against one tick
+                        self.sound[key] = (sound, score)
                         self.heard[key] = (top, vol)
-                        thr = S["threshold"]
-                        if score >= thr * KEEP_RATIO:
+                        if strength >= KEEP_RATIO:
                             self.activity[key] = time.time()
-
-                        # trigger when ~75% of the last `min_laugh` seconds were laughing (or cheering…),
-                        # so one quiet breath in the middle doesn't reset it
-                        recent.append(sound if score >= thr else None)
-                        while len(recent) > need:
-                            recent.popleft()
-                        hits = [s for s in recent if s]
-                        if len(recent) == need and recent[-1] and len(hits) >= math.ceil(need * 0.75):
-                            heard = max(set(hits), key=hits.count)
+                        heard = trigger.feed(sound if strength >= 1 else None, round(S["min_laugh"] / HOP))
+                        if heard:
                             log.info("[%s] %s (score %.2f)", label, heard, score)
                             self.laugh.emit(key, heard)
-                            recent.clear()
             except Exception as e:
-                log.warning("[%s] audio stopped: %s", label, e)
+                log.warning("[%s] audio stopped: %s %s", label, type(e).__name__, e)
                 if not stop.is_set():
                     self.levels[key] = "error"
                 stop.wait(2)
