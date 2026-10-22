@@ -724,9 +724,11 @@ class Row(QWidget):
         col.setSpacing(2)
         col.setContentsMargins(0, 0, 0, 0)
         col.addStretch(1)
-        self.title = QLabel(title)
+        # parented to the row straight away: showing a label with no parent yet (col isn't attached until
+        # below) would pop it up as its own little window for a moment
+        self.title = QLabel(title, self)
         col.addWidget(self.title)
-        self.sub = QLabel(subtitle or "")
+        self.sub = QLabel(subtitle or "", self)
         self.sub.setObjectName("secondary")
         self.sub.setWordWrap(True)
         self.sub.setVisible(bool(subtitle))
