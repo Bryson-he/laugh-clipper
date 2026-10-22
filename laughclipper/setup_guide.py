@@ -5,11 +5,11 @@ from PySide6.QtGui import QPainter
 from PySide6.QtWidgets import (QGraphicsOpacityEffect, QHBoxLayout, QLabel, QPushButton, QStackedWidget, QVBoxLayout,
                                QWidget)
 
-from . import winutil
+from . import medal, winutil
 from .config import S, hotkey_label
 from .engine import short_name
 from .theme import T
-from .widgets import AA, NO_PEN, AnimDriver, Group, KeyCap, LevelMeter, Row, StatusPill, Switch, blend
+from .widgets import AA, NO_PEN, AnimDriver, Group, KeyCap, LevelMeter, Row, StatusPill, Switch, blend, loudness
 
 
 class StepDots(QWidget):
@@ -132,12 +132,16 @@ class SetupGuide(QWidget):
     def page_hotkey(self, pl):
         pl.addWidget(title_label("Match Medal's clip hotkey"))
         pl.addWidget(body_label("Laugh Clipper saves a clip by pressing Medal's clip hotkey for you, so it has to "
-                                "be the same clip hotkey you've set in Medal's settings."))
+                                "be the same one you've set in Medal. They're filled in from Medal's settings "
+                                "when they can be read; otherwise click a key and press it."))
         pl.addSpacing(8)
         g = Group()
         self.keycap = KeyCap(hotkey_label())
         self.keycap.clicked.connect(self.record_hotkey)
-        g.add(Row("Medal clip hotkey", "Click it, then press the keys.", self.keycap))
+        self.hk_row = g.add(Row("Medal clip hotkey", "Click it, then press the keys.", self.keycap))
+        self.bm_keycap = KeyCap("")
+        self.bm_keycap.clicked.connect(self.record_bookmark)
+        self.bm_row = g.add(Row("Medal bookmark hotkey", "", self.bm_keycap))
         self.medal_pill = StatusPill("Running", "green")
         self.open_medal = QPushButton("Open Medal")
         self.open_medal.clicked.connect(self.ctrl.open_medal)
@@ -201,6 +205,8 @@ class SetupGuide(QWidget):
         self.dots.set_step(i)
         self.back.setVisible(i > 0)
         self.next.setText({0: "Get Started", self.STEPS - 1: "Finish"}.get(i, "Continue"))
+        if i == 1:
+            self.fill_hotkey_from_medal()
         if i == 3:
             self.reset_peak()
         if animate:
@@ -229,6 +235,35 @@ class SetupGuide(QWidget):
         self.keycap.set_label("Press keys…")
         self.ctrl.record_hotkey()
 
+    def record_bookmark(self):
+        self.bm_keycap.recording = True
+        self.bm_keycap.set_label("Press keys…")
+        self.ctrl.record_hotkey("bookmark_hotkey")
+
+    def update_bookmark(self):
+        from_medal = medal.bookmark_hotkey()
+        bm = S["bookmark_hotkey"] or from_medal
+        self.bm_keycap.recording = False
+        self.bm_keycap.set_label(hotkey_label(bm) if bm else "Not set")
+        self.bm_row.set_sub("Optional, for adding bookmarks to recordings. "
+                            + ("Read from Medal." if bm and not S["bookmark_hotkey"] else
+                               "Set by you." if bm else "Click, then press it."))
+
+    def fill_hotkey_from_medal(self):
+        """Use Medal's own clip hotkey when ours isn't one of them (the default F8 is often Medal's bookmark)."""
+        clip_keys = medal.clip_hotkeys()
+        match = next((length for length, hk in clip_keys if hk == S["hotkey"]), None)
+        if clip_keys and match is None:
+            length, hk = clip_keys[0]
+            self.ctrl.apply_hotkey(hk)
+            match = length
+        if match is not None:
+            self.hk_row.set_sub(f"Filled in from Medal: its {match} s clip hotkey. Click to change it."
+                                if match else "Filled in from Medal. Click to change it.")
+        else:
+            self.hk_row.set_sub("Couldn't read it from Medal. Click, then press Medal's clip hotkey.")
+        self.update_bookmark()
+
     def update_medal(self):
         ok = self.ctrl.medal_ok
         self.medal_pill.text, self.medal_pill.color_key = ("Running", "green") if ok else ("Not running", "orange")
@@ -241,6 +276,8 @@ class SetupGuide(QWidget):
         if key == "hotkey":
             self.keycap.recording = False
             self.keycap.set_label(hotkey_label())
+        elif key == "bookmark_hotkey":
+            self.update_bookmark()
         elif key == "medal":
             self.update_medal()
         elif key in ("listen_mic", "outputs"):
@@ -301,18 +338,23 @@ class SetupGuide(QWidget):
         eng = self.ctrl.engine
         return eng.sound.get(key, (None, 0.0))[1] if key in eng.threads else None
 
+    def volume(self, key):
+        info = self.ctrl.engine.heard.get(key) if key in self.ctrl.engine.threads else None
+        return loudness(info[1]) if info else 0.0
+
     def refresh_live(self):
         if not self.isVisible():
             return
         thr = S["threshold"]
-        mic = self.raw(("mic", S["mic_device"]))
+        mic = ("mic", S["mic_device"])
         if hasattr(self, "mic_meter"):
-            self.mic_meter.set(mic, thr)
+            self.mic_meter.set(self.raw(mic), thr, self.volume(mic))
         for name, meter in self.out_rows.items():
-            meter.set(self.raw(("out", name)), thr)
+            meter.set(self.raw(("out", name)), thr, self.volume(("out", name)))
         if self.stack.currentIndex() == 3:
-            now = max((self.raw(k) or 0.0 for k in list(self.ctrl.engine.threads)), default=0.0)
-            self.cal_meter.set(now, thr)
+            keys = list(self.ctrl.engine.threads)
+            now = max((self.raw(k) or 0.0 for k in keys), default=0.0)
+            self.cal_meter.set(now, thr, max((self.volume(k) for k in keys), default=0.0))
             if now > self.peak + 0.005:
                 self.peak = now
                 self.update_level_row()

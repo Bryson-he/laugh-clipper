@@ -8,13 +8,13 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (QFileDialog, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu, QMessageBox,
                                QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
-from . import clips, winutil
+from . import clips, medal, sounds, winutil
 from .config import DEFAULTS, S, clean_games, hotkey_label
 from .engine import SOUNDS, short_name, sound_level
 from .theme import T
 from .version import VERSION
 from .widgets import (Chip, Collapsible, Disclosure, Group, KeyCap, LevelMeter, NavItem, PopupButton,
-                      PositionPicker, Row, Segmented, Slider, StatusPill, Switch, WarningBadge)
+                      PositionPicker, Row, Segmented, Slider, StatusPill, Switch, WarningBadge, loudness)
 
 PAGES = [
     ("General", "", "#8e8e93"),
@@ -33,6 +33,11 @@ SOUND_HINTS = {
     "screaming": "Screams of fright or excitement.",
     "gasp": "A sharp breath in, like after a close call.",
 }
+
+
+def key_text(hk):
+    """A hotkey for display ('shift+f7' -> 'Shift + F7'), or 'Not set'."""
+    return hotkey_label(hk) if hk else "Not set"
 
 
 def when(iso):
@@ -207,6 +212,7 @@ class SettingsWindow(QWidget):
         self.switches = {}
         self.sliders = {}
         self.smooth = {}
+        self.vsmooth = {}
         self.out_rows = {}
         self.mic_names = []
         self.upd_mode = "check"
@@ -398,7 +404,58 @@ class SettingsWindow(QWidget):
         test.setObjectName("prominent")
         test.clicked.connect(self.ctrl.test_toast)
         g.add(Row("Preview", None, test))
+
+        g = p.section("Sound", footer="Handy in exclusive-fullscreen games, where Windows won't let the "
+                                      "notification show. With Wave Link, pick a channel you can hear, like "
+                                      "Game, if your System channel is turned down.")
+        g.add(Row("Play a sound with the notification", None, self.switch("sound_cue")))
+        play = QPushButton("Play")
+        play.setObjectName("small")
+        play.clicked.connect(lambda: self.preview_sound())
+        self.volume_row = self.slider_row(g, "Volume", None, "sound_volume", 0, 100, 5,
+                                          lambda v: "Off" if v == 0 else f"{v:g}%")
+        self.volume_row.layout().addWidget(play, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.sound_pick = PopupButton()
+        self.sound_pick.addItems(list(sounds.SOUNDS.values()))
+        self.sound_pick.setCurrentIndex(list(sounds.SOUNDS).index(S["sound_name"]))
+        self.sound_pick.activated.connect(self.sound_chosen)
+        self.sound_pick_row = g.add(Row("Sound", None, self.sound_pick))
+        self.sound_out = PopupButton()
+        self.sound_out.activated.connect(self.sound_device_chosen)
+        self.sound_out_names = []
+        self.sound_out_row = g.add(Row("Play on", None, self.sound_out))
+        self.fill_sound_outputs()
+        self.update_sound_rows()
         return p.finish()
+
+    def fill_sound_outputs(self, speakers=None):
+        names = list(speakers if speakers is not None else (self.ctrl.devices[1] if self.ctrl.devices else []))
+        cur = S["sound_device"]
+        if cur and cur not in names:
+            names.append(cur)
+        self.sound_out_names = names
+        self.sound_out.blockSignals(True)
+        self.sound_out.clear()
+        self.sound_out.addItem("Windows default")
+        self.sound_out.addItems([short_name(n) if n in (speakers or names) else f"{short_name(n)} (not connected)"
+                                 for n in names])
+        self.sound_out.setCurrentIndex(names.index(cur) + 1 if cur else 0)
+        self.sound_out.blockSignals(False)
+
+    def preview_sound(self):
+        sounds.play_chime(S["sound_volume"], S["sound_device"], S["sound_name"])
+
+    def sound_chosen(self, i):
+        self.ctrl.set("sound_name", list(sounds.SOUNDS)[i])
+        self.preview_sound()
+
+    def sound_device_chosen(self, i):
+        self.ctrl.set("sound_device", "" if i <= 0 else self.sound_out_names[i - 1])
+        self.preview_sound()     # let them hear where it goes
+
+    def update_sound_rows(self):
+        for row in (self.sound_pick_row, self.volume_row, self.sound_out_row):
+            row.setEnabled(S["sound_cue"])
 
     def page_clipping(self):
         p = Page("Clipping")
@@ -407,7 +464,13 @@ class SettingsWindow(QWidget):
                              "moment gets cut off.")
         self.keycap = KeyCap(hotkey_label())
         self.keycap.clicked.connect(self.record_hotkey)
-        g.add(Row("Medal clip hotkey", "Click to change. Must match the clip hotkey in Medal.", self.keycap))
+        self.medal_keys = PopupButton()
+        self.medal_keys.setMinimumWidth(200)
+        self.medal_keys.setMinimumContentsLength(14)
+        self.medal_keys.activated.connect(self.medal_key_chosen)
+        self.use_medal_key = QPushButton("Use Medal's")
+        self.use_medal_key.clicked.connect(lambda: self.ctrl.apply_hotkey(self.medal_clip_keys[0][1]))
+        self.hotkey_row = g.add(Row("Medal clip hotkey", "", self.medal_keys, self.use_medal_key, self.keycap))
         g.add(Row("Save clips automatically", "Saves the clip for you instead of asking.",
                   self.switch("auto_clip")))
         g.add(Row("Warn when Medal isn't running", "Tells you the clip won't save instead of pretending it did.",
@@ -430,7 +493,82 @@ class SettingsWindow(QWidget):
         self.auto_folder_btn.clicked.connect(lambda: self.ctrl.set("clips_folder", ""))
         self.folder_row = g.add(Row("Medal's clips folder", "", self.auto_folder_btn, choose))
         self.update_folder_row()
+
+        self.rec_pill = StatusPill("Not recording", "secondary")
+        g = p.section("While Medal is recording",
+                      footer="Medal can record a whole session (its start/stop recording hotkey). While it does, "
+                             "a laugh can add a bookmark to that recording instead of saving a separate clip.")
+        self.bookmark_row = g.add(Row("Add a bookmark instead of a clip", "", self.rec_pill,
+                                      self.switch("bookmark_when_recording")))
+        self.bm_keycap = KeyCap("")
+        self.bm_keycap.clicked.connect(self.record_bookmark_key)
+        self.use_medal_bm = QPushButton("Use Medal's")
+        self.use_medal_bm.clicked.connect(lambda: self.ctrl.set("bookmark_hotkey", ""))
+        self.bm_key_row = g.add(Row("Medal bookmark hotkey", "", self.use_medal_bm, self.bm_keycap))
+        self.update_medal_keys()
         return p.finish()
+
+    def update_medal_keys(self):
+        """Compare our hotkeys with the ones set in Medal (everyone's are different), and offer Medal's."""
+        keys = medal.hotkeys()
+        clip_keys = medal.clip_hotkeys(keys)
+        self.medal_clip_keys = clip_keys
+        many = len(clip_keys) > 1
+        self.medal_keys.blockSignals(True)
+        self.medal_keys.clear()
+        if many:
+            self.medal_keys.addItem("Use Medal's…")
+            for length, hk in clip_keys:
+                self.medal_keys.addItem(f"{length} s clip  ·  {key_text(hk)}" if length else key_text(hk))
+        self.medal_keys.setCurrentIndex(0)
+        self.medal_keys.blockSignals(False)
+        self.medal_keys.setVisible(many)
+        match = next((length for length, hk in clip_keys if hk == S["hotkey"]), None)
+        self.use_medal_key.setVisible(len(clip_keys) == 1 and match is None)
+        if not clip_keys:
+            self.hotkey_row.set_sub("Click, then press the clip hotkey you set in Medal.")
+        elif match is not None:
+            self.hotkey_row.set_sub(f"Matches Medal's {match} s clip hotkey." if match else
+                                    "Matches Medal's clip hotkey.")
+        elif S["hotkey"] == medal.bookmark_hotkey(keys):
+            self.hotkey_row.set_sub("That's Medal's bookmark hotkey, not its clip hotkey. Use Medal's clip "
+                                    "hotkey instead.")
+        else:
+            self.hotkey_row.set_sub(f"Medal's clip hotkey is {key_text(clip_keys[0][1])}." if not many else
+                                    "Medal doesn't use this hotkey for clips. Pick one of Medal's from the menu.")
+
+        from_medal = medal.bookmark_hotkey(keys)
+        bm = S["bookmark_hotkey"] or from_medal
+        if not self.bm_keycap.recording:
+            self.bm_keycap.set_label(key_text(bm))
+        self.use_medal_bm.setVisible(bool(S["bookmark_hotkey"] and from_medal and S["bookmark_hotkey"] != from_medal))
+        if not bm:
+            self.bm_key_row.set_sub("Not found in Medal's settings. Click, then press the bookmark hotkey you "
+                                    "set in Medal.")
+        elif S["bookmark_hotkey"]:
+            self.bm_key_row.set_sub("Set by you. Click to change it.")
+        else:
+            self.bm_key_row.set_sub("Read from Medal's settings. Click to change it.")
+        self.bookmark_row.set_sub(f"While Medal is recording, presses its bookmark hotkey ({key_text(bm)}) "
+                                  "instead of the clip hotkey." if bm else
+                                  "Set Medal's bookmark hotkey below first.")
+        self.update_rec_pill()
+
+    def record_bookmark_key(self):
+        self.bm_keycap.recording = True
+        self.bm_keycap.set_label("Press keys…")
+        self.ctrl.record_hotkey("bookmark_hotkey")
+
+    def update_rec_pill(self):
+        rec = self.ctrl.recording
+        self.rec_pill.text, self.rec_pill.color_key = ("Recording", "red") if rec else ("Not recording", "secondary")
+        self.rec_pill.setFixedWidth(88 if rec else 108)
+        self.rec_pill.update()
+
+    def medal_key_chosen(self, i):
+        if 1 <= i <= len(self.medal_clip_keys):
+            self.ctrl.apply_hotkey(self.medal_clip_keys[i - 1][1])
+        self.medal_keys.setCurrentIndex(0)
 
     def page_detection(self):
         p = Page("Detection")
@@ -454,8 +592,8 @@ class SettingsWindow(QWidget):
         g = p.section(footer="Watch the live score while you laugh, then set the trigger just below where "
                              "it usually peaks.")
         self.live_meter = LevelMeter(210)
-        g.add(Row("Live score", "The highest score for the sounds above, across everything you're "
-                                "listening to.", self.live_meter))
+        g.add(Row("Live score", "Grey shows how loud it is. The bar on top is the score for the sounds above, "
+                                "green once it passes the trigger level.", self.live_meter))
         self.slider_row(g, "Trigger level", "Lower catches more, higher means fewer false alarms.",
                         "threshold", 0.05, 0.9, 0.01, lambda v: f"{v:.2f}")
         self.slider_row(g, "Length needed", "How long the laugh (or cheer…) has to last before it counts.",
@@ -522,8 +660,9 @@ class SettingsWindow(QWidget):
                                            f"score {score:.2f}" if score else "", "auto-saved" if it.get("auto") else "")
                                if x)
             status = it.get("status")
-            pill = {"saved": StatusPill("Saved", "green"), "failed": StatusPill("Didn't save", "orange")}.get(
-                status, StatusPill("Not checked", "secondary"))
+            pill = {"saved": StatusPill("Saved", "green"), "failed": StatusPill("Didn't save", "orange"),
+                    "bookmarked": StatusPill("Bookmarked", "accent")}.get(status, StatusPill("Not checked",
+                                                                                              "secondary"))
             right = [pill]
             if status == "saved" and it.get("file") and Path(it["file"]).exists():
                 show = QPushButton("Show")
@@ -589,6 +728,7 @@ class SettingsWindow(QWidget):
 
     # ---------------------------------------------------------- audio devices
     def build_devices(self, mics, spks, default):
+        self.fill_sound_outputs(spks)
         self.mic_names = list(mics)
         items = ["Windows default"] + list(mics)
         cur = S["mic_device"]
@@ -674,20 +814,30 @@ class SettingsWindow(QWidget):
             return v
         return None
 
+    def display_volume(self, key):
+        """How loud the source is (0-1), falling back gently so it doesn't flicker."""
+        eng = self.ctrl.engine
+        info = eng.heard.get(key) if key in eng.threads else None
+        v = max(loudness(info[1]) if info else 0.0, self.vsmooth.get(key, 0.0) * 0.8)
+        self.vsmooth[key] = v
+        return v
+
     def refresh_live(self):
         if not self.isVisible():
             return
         thr = S["threshold"]
         mic = ("mic", S["mic_device"])
-        self.mic_meter.set(self.display_level(mic), thr)
+        self.mic_meter.set(self.display_level(mic), thr, self.display_volume(mic))
         self.mic_row.set_sub(self.hearing(mic) or "Off")
         for name, (row, meter, connected) in self.out_rows.items():
             key = ("out", name)
-            meter.set(self.display_level(key), thr)
+            meter.set(self.display_level(key), thr, self.display_volume(key))
             h = self.hearing(key)
             row.set_sub(h if h else (name if connected else "Not connected"))
-        levels = [v for k, v in self.smooth.items() if k in self.ctrl.engine.threads]
-        self.live_meter.set(max(levels, default=0.0), thr)
+        live = self.ctrl.engine.threads
+        levels = [v for k, v in self.smooth.items() if k in live]
+        volumes = [v for k, v in self.vsmooth.items() if k in live]
+        self.live_meter.set(max(levels, default=0.0), thr, max(volumes, default=0.0))
 
     # ---------------------------------------------------------- misc
     def refresh_displays(self):
@@ -749,6 +899,14 @@ class SettingsWindow(QWidget):
         if key == "hotkey":
             self.keycap.recording = False
             self.keycap.set_label(hotkey_label())
+            self.update_medal_keys()
+        if key in ("bookmark_hotkey", "bookmark_when_recording"):
+            self.bm_keycap.recording = False
+            self.update_medal_keys()
+        if key == "medal":
+            self.update_rec_pill()
+        if key == "sound_cue":
+            self.update_sound_rows()
 
     def update_clicked(self):
         if self.upd_mode == "available":
@@ -797,6 +955,7 @@ class SettingsWindow(QWidget):
         super().showEvent(e)
         self.apply_titlebar()
         self.startup_sw.set_silent(winutil.startup_enabled())
+        self.update_medal_keys()          # Medal's hotkeys may have changed while we were hidden
 
     def closeEvent(self, e):
         e.ignore()

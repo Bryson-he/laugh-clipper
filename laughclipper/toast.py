@@ -46,6 +46,7 @@ class Toast(QWidget):
         # "ask" | "pending" | "saving" | "saved" | "failed" | "nomedal"
         self.mode, self.prev = mode, None
         self.saved_sub = "Sent to Medal"
+        self.bookmark = False         # Medal is recording: this laugh will add a bookmark, not a clip
         self.source, self.hotkey = source, hotkey
         self.sound_name, self.still = SOUNDS.get(sound, SOUNDS["laughter"])[:2]
         self.surprised = sound in SURPRISED
@@ -98,7 +99,7 @@ class Toast(QWidget):
 
     @staticmethod
     def size_for(mode):
-        return (W_SAVED, H_SAVED) if mode in ("saved", "saving") else (W_FULL, H_FULL)
+        return (W_SAVED, H_SAVED) if mode in ("saved", "saving", "bookmarked") else (W_FULL, H_FULL)
 
     def showEvent(self, e):
         super().showEvent(e)
@@ -127,6 +128,15 @@ class Toast(QWidget):
             return
         self._switch("saved")
         self.saved_sub = f"In Medal  ·  {game}" if game else "Sent to Medal"
+        self.check.snap(0.0)
+        self.check.target = 1.0
+        self.close_at = self.t + 1.5
+
+    def set_bookmarked(self):
+        """Medal is recording, so we added a bookmark to it instead of saving a clip."""
+        if self.mode in ("saved", "bookmarked") or self.closing:
+            return
+        self._switch("bookmarked")
         self.check.snap(0.0)
         self.check.target = 1.0
         self.close_at = self.t + 1.5
@@ -281,12 +291,17 @@ class Toast(QWidget):
         W, H = self.size_for(mode)
         rr = QRectF(center.x() - W / 2, center.y() - H / 2, W, H)
         cy = rr.center().y()
-        icon = 34 if mode in ("saved", "saving") else 44
+        icon = 34 if mode in ("saved", "saving", "bookmarked") else 44
         pad = (H - icon) / 2
         ic = QRectF(rr.left() + pad, cy - icon / 2, icon, icon)
         tx = ic.right() + 12
 
-        if mode == "saved":
+        if mode == "bookmarked":
+            pop = 0.82 + 0.18 * clamp(self.check.value * 1.4)
+            d = icon * pop
+            draw_bookmark_icon(p, QRectF(ic.center().x() - d / 2, ic.center().y() - d / 2, d, d), self.check.value)
+            self.draw_texts(p, tx, cy, rr.right() - pad - tx, "Bookmarked", "Added to your recording", None)
+        elif mode == "saved":
             pop = 0.82 + 0.18 * clamp(self.check.value * 1.4)
             d = icon * pop
             draw_check_icon(p, QRectF(ic.center().x() - d / 2, ic.center().y() - d / 2, d, d), self.check.value)
@@ -314,13 +329,15 @@ class Toast(QWidget):
             if live:
                 self.ring_rect, self.btn_rect = ring, btn
             if mode == "ask":
-                title, sub = f"{self.sound_name} detected", f"{self.source}  ·  {self.hotkey} to clip"
+                title = f"{self.sound_name} detected"
+                sub = f"{self.source}  ·  " + ("Medal is recording" if self.bookmark else f"{self.hotkey} to clip")
                 frac = self.left / self.total
             elif self.laughing:
-                title, sub = "Saving clip", f"{self.still}  ·  {self.source}"
+                title, sub = ("Bookmarking" if self.bookmark else "Saving clip"), f"{self.still}  ·  {self.source}"
                 frac = 1.0
             else:
-                title, sub = "Saving clip", f"In {max(0, math.ceil(self.left))}s  ·  {self.source}"
+                title = "Bookmarking" if self.bookmark else "Saving clip"
+                sub = f"In {max(0, math.ceil(self.left))}s  ·  {self.source}"
                 frac = self.left / self.total
             title_w = self.draw_texts(p, tx, cy, btn.left() - 12 - tx, title, sub, None)
             if mode == "pending" and self.wave.value > 0.02:
@@ -331,7 +348,7 @@ class Toast(QWidget):
             p.drawRoundedRect(btn, 17, 17)
             p.setPen(QColor("white"))
             p.setFont(T.font(14, 600, display=True))
-            p.drawText(btn, Qt.AlignmentFlag.AlignCenter, "Now" if mode == "pending" else "Clip")
+            p.drawText(btn, Qt.AlignmentFlag.AlignCenter, "Now" if mode == "pending" else "Mark" if self.bookmark else "Clip")
             draw_ring(p, ring, clamp(frac), self.hover_ring)
         p.restore()
 
@@ -420,6 +437,32 @@ def draw_warning_icon(p, r):
     p.setBrush(QColor("white"))
     p.drawRoundedRect(QRectF(c.x() - 2 * u, r.top() + 9 * u, 4 * u, 15 * u), 2 * u, 2 * u)
     p.drawEllipse(QPointF(c.x(), r.top() + 29.5 * u), 2.4 * u, 2.4 * u)
+
+
+def draw_bookmark_icon(p, r, prog):
+    """Blue circle with a white bookmark ribbon that drops in."""
+    g = QLinearGradient(r.topLeft(), r.bottomLeft())
+    g.setColorAt(0, QColor("#5e9bff"))
+    g.setColorAt(1, QColor("#2f6bff"))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(g)
+    p.drawEllipse(r)
+    u = r.width() / 40
+    drop = (1 - clamp(prog)) * 4 * u
+    x0, y0, w, h = r.left() + 13.5 * u, r.top() + 10 * u - drop, 13 * u, 20 * u
+    ribbon = QPainterPath(QPointF(x0, y0 + 2 * u))
+    ribbon.quadTo(QPointF(x0, y0), QPointF(x0 + 2 * u, y0))
+    ribbon.lineTo(QPointF(x0 + w - 2 * u, y0))
+    ribbon.quadTo(QPointF(x0 + w, y0), QPointF(x0 + w, y0 + 2 * u))
+    ribbon.lineTo(QPointF(x0 + w, y0 + h))
+    ribbon.lineTo(QPointF(x0 + w / 2, y0 + h - 5 * u))
+    ribbon.lineTo(QPointF(x0, y0 + h))
+    ribbon.closeSubpath()
+    p.save()
+    p.setOpacity(p.opacity() * clamp(0.3 + prog))
+    p.setBrush(QColor("white"))
+    p.drawPath(ribbon)
+    p.restore()
 
 
 def draw_spinner(p, r, t):

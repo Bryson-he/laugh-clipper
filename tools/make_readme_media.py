@@ -7,6 +7,7 @@ Everything runs offscreen with made-up devices, games and live scores, and a thr
 so it never touches your real settings, audio or keyboard.
 """
 
+import json
 import os
 import sys
 import tempfile
@@ -21,6 +22,14 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 os.environ.setdefault("QT_QPA_FONTDIR", "C:/Windows/Fonts")
 os.environ["QT_SCALE_FACTOR"] = "2"                  # render at 2x so it stays sharp on hi-dpi screens
 os.environ["APPDATA"] = tempfile.mkdtemp()
+# a pretend Medal with the usual hotkeys, so the Clipping page shows them
+_store = Path(os.environ["APPDATA"]) / "Medal" / "store"
+_store.mkdir(parents=True)
+(_store / "settings.json").write_text(json.dumps({"recorder": {"triggerHotkeys": [
+    {"action": "clip;length=30", "device": "keyboard", "inputs": "SHIFT + F7"},
+    {"action": "clip;length=60", "device": "keyboard", "inputs": "SHIFT + F8"},
+    {"action": "segment_toggle", "device": "keyboard", "inputs": "ALT + F7"},
+    {"action": "bookmark", "device": "keyboard", "inputs": "F8"}]}}))
 sys.path.insert(0, str(ROOT))
 sys.modules["keyboard"] = types.SimpleNamespace(add_hotkey=lambda *a, **k: 1, remove_hotkey=lambda *a: None,
                                                 send=lambda *a: None, unhook_all=lambda: None)
@@ -30,11 +39,11 @@ from PySide6.QtCore import QPoint, QPointF, QRectF, Qt  # noqa: E402
 from PySide6.QtGui import QColor, QImage, QLinearGradient, QPainter, QPainterPath, QRadialGradient, QRegion  # noqa: E402
 from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 
-from laughclipper import app as appmod, config, settings_window, theme, toast as toastmod, winutil  # noqa: E402
+from laughclipper import app as appmod, config, medal, settings_window, theme, toast as toastmod, winutil  # noqa: E402
 from laughclipper.config import S  # noqa: E402
 from laughclipper.theme import T  # noqa: E402
 
-VERSION = "1.1.0"
+VERSION = "1.3.0"
 MICS = ["Wave:3 Mic (Elgato Wave:3)", "Headset Microphone (Arctis Nova Pro Wireless)"]
 SPEAKERS = ["Game (Elgato Virtual Audio)", "Voice Chat (Elgato Virtual Audio)", "Browser (Elgato Virtual Audio)",
             "Music (Elgato Virtual Audio)", "System (Elgato Virtual Audio)"]
@@ -45,13 +54,15 @@ winutil.process_running = lambda exe: True
 winutil.foreground_app = lambda: GAME
 winutil.exe_description = lambda path: "Rocket League"
 winutil.startup_enabled = lambda: True
+medal.is_recording = lambda root: True             # show the "Recording" badge on the Clipping page
 settings_window.VERSION = VERSION
 toastmod.Toast.showEvent = lambda self, e: None
 
 config.load()
 S.update({
     "listen_mic": True, "mic_device": "", "outputs": SPEAKERS[:2], "monitor": 1, "position": "bottom-center",
-    "hotkey": "f8", "auto_clip": True, "clip_delay": 8, "max_wait": 30, "triggers": ["laughter", "cheering"],
+    "hotkey": "shift+f7", "bookmark_when_recording": True, "sound_cue": True,
+    "sound_device": SPEAKERS[0], "auto_clip": True, "clip_delay": 8, "max_wait": 30, "triggers": ["laughter", "cheering"],
     "threshold": 0.3, "min_laugh": 1.0, "pause_tolerance": 1.5, "game_only": True,
     "games": [{"exe": "rocketleague.exe", "name": "Rocket League"}, {"exe": "valorant.exe", "name": "VALORANT"},
               {"exe": "forzahorizon5.exe", "name": "Forza Horizon 5"}],
@@ -64,12 +75,12 @@ ctrl = appmod.Controller(app)
 ctrl.update_state = ("uptodate", {})
 eng = ctrl.engine
 eng._listen = lambda *a: None
-LIVE = {("mic", ""): (0.64, "laughter", "Laughter"),
-        ("out", SPEAKERS[0]): (0.06, "laughter", "Vehicle"),
-        ("out", SPEAKERS[1]): (0.38, "laughter", "Giggle")}
-for key, (level, sound, heard) in LIVE.items():
+LIVE = {("mic", ""): (0.64, "laughter", "Laughter", 0.09),          # score, sound, top YAMNet class, volume
+        ("out", SPEAKERS[0]): (0.06, "laughter", "Vehicle", 0.2),
+        ("out", SPEAKERS[1]): (0.38, "laughter", "Giggle", 0.025)}
+for key, (level, sound, heard, vol) in LIVE.items():
     eng.threads[key] = threading.Event()
-    eng.levels[key], eng.sound[key], eng.heard[key] = level, (sound, level), (heard, 0.05)
+    eng.levels[key], eng.sound[key], eng.heard[key] = level, (sound, level), (heard, vol)
 ctrl.check_game()
 S["sound_levels"] = {"cheering": 0.4}
 S["sound_sources"] = {"cheering": ["mic", f"out:{SPEAKERS[1]}"]}
@@ -163,7 +174,7 @@ def render_toast(p, t, x, y):
 
 
 def make_toast(mode, source, sound, seconds=8):
-    t = toastmod.Toast(app.primaryScreen(), "bottom-center", mode, source, sound, "F8", seconds)
+    t = toastmod.Toast(app.primaryScreen(), "bottom-center", mode, source, sound, "Shift + F7", seconds)
     t.clock.restart = lambda: 16
     return t
 
@@ -288,8 +299,8 @@ def popup_autosave():
 
 def popup_gallery():
     """Still frames of the different popups, stacked on one card."""
-    items = [("ask", "Game", "cheering"), ("ask", "Your mic", "screaming"),
-             ("pending", "Voice Chat", "laughter"), ("saved", "Game", "laughter"), ("nomedal", "Game", "laughter")]
+    items = [("ask", "Game", "cheering"), ("ask", "Your mic", "screaming"), ("pending", "Voice Chat", "laughter"),
+             ("saved", "Game", "laughter"), ("bookmarked", "Game", "laughter"), ("nomedal", "Game", "laughter")]
     gap, top = 84, 18
     h = top * 2 + gap * (len(items) - 1) + 76 + 36
     img = canvas(CARD_W, h)
@@ -298,7 +309,7 @@ def popup_gallery():
     backdrop(p, QRectF(0, 0, CARD_W, h))
     for i, (mode, source, sound) in enumerate(items):
         t = make_toast(mode, source, sound, 8)
-        if mode == "saved":
+        if mode in ("saved", "bookmarked"):
             t.saved_sub = "In Medal  ·  Rocket League"
             t.check.snap(1.0)
             t.close_at = None

@@ -357,18 +357,28 @@ class KeyCap(QAbstractButton):
         p.drawText(cap, Qt.AlignmentFlag.AlignCenter, self.text())
 
 
+def loudness(rms):
+    """RMS volume -> 0..1 on a dB scale (-60 dB is empty, -6 dB is full), so quiet sound still shows."""
+    if not rms or rms <= 0:
+        return 0.0
+    return clamp((20 * math.log10(rms) + 60) / 54)
+
+
 class LevelMeter(QWidget):
-    """Thin capsule meter with a tick at the trigger level; turns green above it."""
+    """Thin capsule meter with a tick at the trigger level. A soft fill behind shows how loud the sound is;
+    the bar on top is the laugh (or cheer…) score, and turns green above the tick."""
 
     def __init__(self, width=90, parent=None):
         super().__init__(parent)
         self.setFixedSize(width, 16)
         self.level = None
+        self.volume = 0.0
         self.threshold = 0.3
 
-    def set(self, level, threshold):
-        if level != self.level or threshold != self.threshold:
-            self.level, self.threshold = level, threshold
+    def set(self, level, threshold, volume=0.0):
+        volume = round(volume or 0.0, 3)
+        if level != self.level or threshold != self.threshold or volume != self.volume:
+            self.level, self.threshold, self.volume = level, threshold, volume
             self.update()
 
     def paintEvent(self, _):
@@ -378,9 +388,12 @@ class LevelMeter(QWidget):
         p.setPen(NO_PEN)
         p.setBrush(T.c("meter_bg"))
         p.drawRoundedRect(QRectF(0, cy - 2.5, w, 5), 2.5, 2.5)
+        if self.volume > 0.01:
+            p.setBrush(with_alpha(T.c("meter_idle"), 0.45))
+            p.drawRoundedRect(QRectF(0, cy - 2.5, max(5, w * self.volume), 5), 2.5, 2.5)
         lvl = self.level
         if isinstance(lvl, float) and lvl > 0.004:
-            p.setBrush(T.c("green") if lvl >= self.threshold else T.c("meter_idle"))
+            p.setBrush(T.c("green") if lvl >= self.threshold else T.c("accent"))
             p.drawRoundedRect(QRectF(0, cy - 2.5, max(5, w * min(lvl, 1.0)), 5), 2.5, 2.5)
         x = w * self.threshold
         p.setBrush(with_alpha(T.c("text"), 0.55))

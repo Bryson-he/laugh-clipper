@@ -82,6 +82,9 @@ class FakeToast:
     def set_failed(self, seconds):
         self.mode = "failed"
 
+    def set_bookmarked(self):
+        self.mode = "bookmarked"
+
     def set_nomedal(self, seconds):
         self.mode = "nomedal"
 

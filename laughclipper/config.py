@@ -36,6 +36,13 @@ DEFAULTS = {
     "medal_check": True,       # warn (and don't pretend to save) when Medal isn't running
     "confirm_clips": True,     # after the hotkey, check a new clip appears in Medal's folder
     "clips_folder": "",        # Medal's clips folder; "" = find it (X:\Medal\Clips)
+    "bookmark_when_recording": False,  # while Medal is recording, press its bookmark key instead of clipping
+    "bookmark_hotkey": "",     # Medal's bookmark hotkey; "" = read it from Medal's settings
+    # sound cue
+    "sound_cue": False,        # play a short chime when the popup appears
+    "sound_volume": 50,        # 0-100
+    "sound_device": "",        # output to play it on; "" = Windows default
+    "sound_name": "chime",     # which sound (keys of sounds.SOUNDS)
     # games
     "game_only": False,        # only listen while a game is the window in front
     "games": [],               # [{"exe": "rocketleague.exe", "name": "Rocket League"}]
@@ -93,8 +100,15 @@ def load():
         S["sound_sources"] = {k: [s for s in v if isinstance(s, str)] for k, v in sources.items()
                               if k in SOUNDS and isinstance(v, list) and any(isinstance(s, str) for s in v)}
         S["games"] = clean_games(S["games"])
-        if not isinstance(S["clips_folder"], str):
-            S["clips_folder"] = ""
+        for key in ("clips_folder", "bookmark_hotkey", "sound_device"):
+            if not isinstance(S[key], str):
+                S[key] = ""
+        if not isinstance(S["sound_volume"], (int, float)) or isinstance(S["sound_volume"], bool):
+            S["sound_volume"] = DEFAULTS["sound_volume"]
+        S["sound_volume"] = int(min(max(S["sound_volume"], 0), 100))
+        from .sounds import SOUNDS as CUES
+        if S["sound_name"] not in CUES:
+            S["sound_name"] = DEFAULTS["sound_name"]
         S["ignored_games"] = [g["exe"] for g in clean_games(S["ignored_games"])]
         if path != SETTINGS_PATH:
             save()

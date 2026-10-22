@@ -76,7 +76,8 @@ YouTube video between matches won't clip anything.
 
 ### 🎧 Hears your mic, game and voice chat separately
 
-Listen to your microphone and any of your PC's audio outputs at once, each with its own live meter. With
+Listen to your microphone and any of your PC's audio outputs at once, each with its own live meter: grey shows
+how loud it is, and the bar on top shows how much it sounds like laughing (green once it would trigger). With
 **Elgato Wave Link**, every channel (Game, Voice Chat, Music…) shows up separately, so you can listen to the game and
 your friends but ignore your music.
 
@@ -84,6 +85,21 @@ your friends but ignore your music.
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-audio-dark.png">
   <img src="docs/images/settings-audio-light.png" width="720" alt="Audio settings with a live meter for each source">
+</picture>
+</div>
+
+### 🔖 Bookmarks your recordings
+
+Recording a whole session in Medal? Turn on **Add a bookmark instead of a clip** and, while Medal is recording, a laugh
+drops a bookmark into the recording instead of saving a separate clip. It notices recordings however you start them.
+
+Laugh Clipper also reads your clip and bookmark hotkeys straight from Medal's settings, so you don't have to type
+them in, and it warns you if they don't match.
+
+<div align="center">
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-clipping-dark.png">
+  <img src="docs/images/settings-clipping-light.png" width="720" alt="Clipping settings with Medal's hotkeys and the bookmark option">
 </picture>
 </div>
 
@@ -108,6 +124,8 @@ button to jump straight to the file.
 - **Quick setup:** a short guide on first launch sets your Medal hotkey and audio, and finds the right trigger level
   from a few seconds of laughing.
 - **Tune it to your voice:** watch the live score while you laugh, then set the trigger level just below it.
+- **Optional sound:** a soft chime (or a pop, marimba or bell) when the popup appears, on any output you choose. Handy
+  in exclusive-fullscreen games where the popup can't show.
 - **Tray icon shows what it's doing:** grey when paused, an orange dot when it's waiting for a game or Medal is closed.
 - **Put the popup anywhere:** any corner or edge of any monitor, and choose how long it stays up.
 - **Looks at home on Windows 11:** follows your light or dark mode, with smooth, springy animations.
@@ -142,7 +160,8 @@ You'll also need [Medal](https://medal.tv) installed and running, since it's wha
 
 The setup guide walks you through this on first launch (and any time from **General → Run Setup Again**):
 
-1. **Match the hotkey.** On the **Clipping** page, click the key and press the same clip hotkey you use in Medal.
+1. **Match the hotkey.** It's filled in from Medal's settings when it can be read. Otherwise, on the **Clipping**
+   page, click the key and press the same clip hotkey you use in Medal.
 2. **Pick what to listen to.** On the **Audio** page, turn on your mic and the outputs your game and voice chat
    play through.
 3. **Tune it.** On the **Detection** page, laugh a few times and watch the live score, then set the trigger level a
@@ -160,6 +179,13 @@ The setup guide walks you through this on first launch (and any time from **Gene
 
 Windows doesn't let anything appear over games running in **exclusive fullscreen**. Switch the game to
 **borderless** or **windowed fullscreen**. Auto-save still works either way.
+</details>
+
+<details>
+<summary><b>I can't hear the notification sound.</b></summary>
+
+It plays on Windows' default output, which with Elgato Wave Link is usually the **System** channel. If that's turned
+down in your mix, go to **Notification → Sound → Play on** and pick a channel you can hear, like **Game**.
 </details>
 
 <details>
@@ -244,10 +270,12 @@ hours, or straight away with **Check for Updates**.
 | `laughclipper/updater.py` | Checks GitHub Releases and installs updates |
 | `laughclipper/clips.py` | Checks Medal saved each clip, and the clip history |
 | `laughclipper/setup_guide.py` | The first-run setup guide |
+| `laughclipper/medal.py` | Reads Medal's hotkeys and spots when it's recording |
+| `laughclipper/sounds.py` | The optional notification sounds (made in code) |
 | `laughclipper/winutil.py` | Windows bits: startup, foreground app, process checks |
 | `LaughClipper.spec`, `installer/LaughClipper.iss` | PyInstaller build and Inno Setup installer |
 | `.github/workflows/release.yml`, `tests.yml` | Builds and publishes releases; runs the tests |
-| `tests/` | pytest tests (settings, triggers, games, clipping, clip check, setup guide) |
+| `tests/` | pytest tests (settings, triggers, games, clipping, clip check, Medal, sounds, setup guide) |
 
 </details>
 

@@ -69,6 +69,19 @@ def test_per_sound_settings_are_cleaned():
     assert S["sound_sources"] == {"shouting": ["mic"]}
 
 
+def test_new_options_are_cleaned():
+    load({"sound_volume": 250, "bookmark_hotkey": 5, "clips_folder": None, "sound_device": ["x"]})
+    assert S["sound_volume"] == 100 and S["bookmark_hotkey"] == "" and S["clips_folder"] == ""
+    assert S["sound_device"] == ""
+    load({"sound_name": "airhorn"})
+    assert S["sound_name"] == "chime"
+    load({"sound_name": "marimba"})
+    assert S["sound_name"] == "marimba"
+    load({"sound_volume": "loud"})
+    assert S["sound_volume"] == DEFAULTS["sound_volume"]
+    assert S["bookmark_when_recording"] is False and S["sound_cue"] is False     # off until turned on
+
+
 def test_save_and_load_round_trip():
     S["triggers"] = ["laughter", "cheering"]
     S["sound_levels"] = {"cheering": 0.4}

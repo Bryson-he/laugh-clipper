@@ -14,7 +14,7 @@ from PySide6.QtGui import QColor, QGuiApplication, QIcon, QImage, QPainter, QPix
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
-from . import clips, config, winutil
+from . import clips, config, medal, sounds, winutil
 from .config import S, hotkey_label
 from .engine import Engine, short_name
 from .theme import T
@@ -114,7 +114,7 @@ class Controller(QObject):
     update_changed = Signal(str, dict)
     history_changed = Signal()
     _hotkey_hit = Signal()
-    _hotkey_recorded = Signal(str)
+    _hotkey_recorded = Signal(str, str)     # which hotkey ("hotkey" / "bookmark_hotkey"), keys
 
     def __init__(self, app):
         super().__init__()
@@ -141,6 +141,7 @@ class Controller(QObject):
         self.game_seen = 0.0
         self.tuning = False          # our own window is in front, so we listen even without a game
         self.medal_ok = True         # False when Medal isn't running (and we're checking for it)
+        self.recording = False       # Medal is recording a session right now
         self.moment = None           # the laugh the popup is about: sound, source, game, peak score
         self.sent_at = 0.0           # when we last sent the hotkey (it echoes back as a key press)
         self.history = clips.load_history()
@@ -149,7 +150,7 @@ class Controller(QObject):
         self.watcher.missing.connect(self.on_clip_missing)
 
         self._hotkey_hit.connect(self.on_hotkey_pressed)
-        self._hotkey_recorded.connect(self.apply_hotkey)
+        self._hotkey_recorded.connect(self.apply_recorded)
         self.save_timer = QTimer(self)
         self.save_timer.setSingleShot(True)
         self.save_timer.setInterval(400)
@@ -204,12 +205,29 @@ class Controller(QObject):
         """Returns False when Medal isn't running, so a clip can't be saved."""
         running = winutil.process_running("medal.exe")
         ok = running is not False or not S["medal_check"]      # None = couldn't tell, so don't warn
-        if ok != self.medal_ok:
-            self.medal_ok = ok
-            log.info("Medal is running" if running else "Medal isn't running")
+        recording = bool(running) and medal.is_recording(self.medal_root())
+        if ok != self.medal_ok or recording != self.recording:
+            if ok != self.medal_ok:
+                log.info("Medal is running" if running else "Medal isn't running")
+            if recording != self.recording:
+                log.info("Medal started recording" if recording else "Medal stopped recording")
+            self.medal_ok, self.recording = ok, recording
             self.update_tray()
             self.changed.emit("medal")
         return ok
+
+    def medal_root(self):
+        """Medal's own folder (C:\\Medal), the parent of its clips folder."""
+        folder = clips.clips_folder()
+        return folder.parent if folder else None
+
+    def bookmark_key(self):
+        return S["bookmark_hotkey"] or medal.bookmark_hotkey()
+
+    def will_bookmark(self):
+        """Medal is recording and we're set to add a bookmark instead of saving a clip."""
+        return bool(S["bookmark_when_recording"] and self.medal_ok and self.bookmark_key()
+                    and medal.is_recording(self.medal_root()))
 
     def open_medal(self):
         path = winutil.medal_path()
@@ -239,12 +257,13 @@ class Controller(QObject):
                 S["games"] = S["games"] + [match]    # not self.set(): that would call back into here
                 self.save_timer.start()
                 self.changed.emit("games")
-            if pid == os.getpid():
-                # our own window: keep listening, so the meters work while you set things up
-                game, tuning = self.game, True
-            elif match or (S["fullscreen_games"] and full and path and exe not in winutil.SYSTEM_EXES):
+            if match or (S["fullscreen_games"] and full and path and exe not in winutil.SYSTEM_EXES):
                 game = match["name"] if match else winutil.exe_description(path)
                 self.game_seen = now
+            elif pid == os.getpid() or self.settings_open():
+                # our settings window or setup guide is open (even on another monitor): keep listening,
+                # so the meters work while you set things up
+                game, tuning = self.game, True
             elif self.game and now - self.game_seen < GAME_GRACE:
                 game = self.game                 # quick alt-tab: keep listening for a moment
         gated = bool(S["game_only"] and S["running"] and game is None and not tuning)
@@ -254,6 +273,10 @@ class Controller(QObject):
                                                    "none, but settings are open" if tuning else "not needed"))
             self.update_tray()
             self.changed.emit("game")
+
+    def settings_open(self):
+        """The settings window or the setup guide is on screen (open and not minimized)."""
+        return any(w is not None and w.isVisible() and not w.isMinimized() for w in (self.window, self.setup))
 
     def status(self):
         """'paused', 'waiting' (for a game) or 'listening'."""
@@ -307,7 +330,8 @@ class Controller(QObject):
         except Exception as e:
             log.warning("Couldn't register hotkey %s: %s", S["hotkey"], e)
 
-    def record_hotkey(self):
+    def record_hotkey(self, setting="hotkey"):
+        """Wait for the next key combination and save it as the clip hotkey, or as `setting`."""
         import keyboard
         if self.hotkey_handle is not None:
             try:
@@ -320,9 +344,17 @@ class Controller(QObject):
             try:
                 hk = keyboard.read_hotkey(suppress=False)
             except Exception:
-                hk = S["hotkey"]
-            self._hotkey_recorded.emit(hk)
+                hk = S[setting]
+            self._hotkey_recorded.emit(setting, hk)
         threading.Thread(target=worker, daemon=True, name="record-hotkey").start()
+
+    def apply_recorded(self, setting, hk):
+        if setting == "hotkey":
+            self.apply_hotkey(hk)
+        else:
+            self.register_hotkey()          # recording took our clip hotkey away; put it back
+            S[setting] = ""                 # so the change below always fires, even for the same keys
+            self.set(setting, hk)
 
     def apply_hotkey(self, hk):
         S["hotkey"] = hk
@@ -340,11 +372,12 @@ class Controller(QObject):
             log.info("clip (you pressed the hotkey)")
             self.after_clip()
 
-    def send_hotkey(self):
+    def send_hotkey(self, key=None):
+        """Press Medal's clip hotkey (or another of its hotkeys, like bookmark)."""
         self.sent_at = time.monotonic()
         try:
             import keyboard
-            keyboard.send(S["hotkey"])
+            keyboard.send(key or S["hotkey"])
         except Exception as e:
             log.warning("Couldn't send hotkey: %s", e)
 
@@ -400,6 +433,14 @@ class Controller(QObject):
             if self.toast:
                 self.toast.set_saved()
             log.info("test clip (hotkey not sent)")
+            return
+        if self.will_bookmark():
+            key = self.bookmark_key()
+            QTimer.singleShot(60, lambda: self.send_hotkey(key))
+            log.info("Medal is recording: bookmark (%s) sent instead of a clip", key)
+            if self.toast:
+                self.toast.set_bookmarked()
+            self.record("bookmarked")
             return
         QTimer.singleShot(60, self.send_hotkey)
         log.info("clip: hotkey sent")
@@ -463,11 +504,14 @@ class Controller(QObject):
                 pass
         seconds = S["clip_delay"] if mode == "pending" else S["popup_seconds"]
         t = Toast(self.screen_for(S["monitor"]), S["position"], mode, label, sound, hotkey_label(), seconds)
+        t.bookmark = not test and self.will_bookmark()
         t.clip_requested.connect(self.clip)
         t.close_requested.connect(self.on_toast_close)
         t.finished.connect(lambda t=t: self.on_toast_done(t))
         self.toast, self.toast_is_test = t, test
         t.show()
+        if S["sound_cue"]:
+            sounds.play_chime(S["sound_volume"], S["sound_device"], S["sound_name"])
 
     def on_toast_close(self):
         if self.pending:
@@ -534,8 +578,10 @@ class Controller(QObject):
                 "listening": f"Listening  ·  {self.game}" if self.game else "Listening"}[self.status()]
         self.act_status.setText(text)
         self.act_medal.setVisible(not self.medal_ok)
-        self.tray.setToolTip(f"Laugh Clipper\n{text}" + ("" if self.medal_ok else
-                                                         "\nMedal isn't running, so clips won't save"))
+        extra = ("\nMedal isn't running, so clips won't save" if not self.medal_ok else
+                 "\nMedal is recording, so laughs add bookmarks" if self.recording and S["bookmark_when_recording"]
+                 else "")
+        self.tray.setToolTip(f"Laugh Clipper\n{text}{extra}")
         state = self.status()
         if state != "paused" and not self.medal_ok:
             state = "warning"
