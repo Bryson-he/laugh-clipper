@@ -211,8 +211,6 @@ class SettingsWindow(QWidget):
         self.setMinimumSize(800, 560)
         self.switches = {}
         self.sliders = {}
-        self.smooth = {}
-        self.vsmooth = {}
         self.out_rows = {}
         self.mic_names = []
         self.upd_mode = "check"
@@ -277,7 +275,7 @@ class SettingsWindow(QWidget):
         self.on_update(*ctrl.update_state)
 
         self.live = QTimer(self)
-        self.live.setInterval(60)
+        self.live.setInterval(40)
         self.live.timeout.connect(self.refresh_live)
         self.live.start()
 
@@ -593,7 +591,12 @@ class SettingsWindow(QWidget):
                              "it usually peaks.")
         self.live_meter = LevelMeter(210)
         g.add(Row("Live score", "Grey shows how loud it is. The bar on top is the score for the sounds above, "
-                                "green once it passes the trigger level.", self.live_meter))
+                                "green once it passes the trigger level. The thin line holds your recent peak.",
+                  self.live_meter))
+        calibrate = QPushButton("Calibrate…")
+        calibrate.clicked.connect(self.ctrl.show_calibration)
+        g.add(Row("Calibrate for your game", "Optional. Listens to your game for a minute, then to you laughing, "
+                                             "and suggests a trigger level between them.", calibrate))
         self.slider_row(g, "Trigger level", "Lower catches more, higher means fewer false alarms.",
                         "threshold", 0.05, 0.9, 0.01, lambda v: f"{v:.2f}")
         self.slider_row(g, "Length needed", "How long the laugh (or cheer…) has to last before it counts.",
@@ -806,21 +809,15 @@ class SettingsWindow(QWidget):
         return text
 
     def display_level(self, key):
+        """The score for the meter (it does its own smoothing), or None when this source is off."""
         eng = self.ctrl.engine
         lvl = eng.levels.get(key) if key in eng.threads else None
-        if isinstance(lvl, float):
-            v = max(lvl, self.smooth.get(key, 0.0) * 0.86)
-            self.smooth[key] = v
-            return v
-        return None
+        return lvl if isinstance(lvl, float) else None
 
     def display_volume(self, key):
-        """How loud the source is (0-1), falling back gently so it doesn't flicker."""
+        """How loud the source is right now (0-1)."""
         eng = self.ctrl.engine
-        info = eng.heard.get(key) if key in eng.threads else None
-        v = max(loudness(info[1]) if info else 0.0, self.vsmooth.get(key, 0.0) * 0.8)
-        self.vsmooth[key] = v
-        return v
+        return loudness(eng.volume.get(key)) if key in eng.threads else 0.0
 
     def refresh_live(self):
         if not self.isVisible():
@@ -834,10 +831,9 @@ class SettingsWindow(QWidget):
             meter.set(self.display_level(key), thr, self.display_volume(key))
             h = self.hearing(key)
             row.set_sub(h if h else (name if connected else "Not connected"))
-        live = self.ctrl.engine.threads
-        levels = [v for k, v in self.smooth.items() if k in live]
-        volumes = [v for k, v in self.vsmooth.items() if k in live]
-        self.live_meter.set(max(levels, default=0.0), thr, max(volumes, default=0.0))
+        live = list(self.ctrl.engine.threads)
+        levels = [v for v in (self.display_level(k) for k in live) if v is not None]
+        self.live_meter.set(max(levels, default=0.0), thr, max((self.display_volume(k) for k in live), default=0.0))
 
     # ---------------------------------------------------------- misc
     def refresh_displays(self):

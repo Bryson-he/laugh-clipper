@@ -129,6 +129,7 @@ class Controller(QObject):
         self.update_state = ("idle", {})
         self.window = None
         self.setup = None
+        self.calibration = None
         self.toast = None
         self.toast_is_test = False
         self.pending = None
@@ -275,8 +276,9 @@ class Controller(QObject):
             self.changed.emit("game")
 
     def settings_open(self):
-        """The settings window or the setup guide is on screen (open and not minimized)."""
-        return any(w is not None and w.isVisible() and not w.isMinimized() for w in (self.window, self.setup))
+        """The settings window, setup guide or calibration is on screen (open and not minimized)."""
+        return any(w is not None and w.isVisible() and not w.isMinimized()
+                   for w in (self.window, self.setup, self.calibration))
 
     def status(self):
         """'paused', 'waiting' (for a game) or 'listening'."""
@@ -613,6 +615,20 @@ class Controller(QObject):
         self.setup.show()
         self.setup.raise_()
         self.setup.activateWindow()
+
+    def show_calibration(self):
+        """Calibrate the trigger level for the game being played (from the Detection page)."""
+        if self.calibration is None:
+            from .calibrate import CalibrationWindow
+            self.calibration = CalibrationWindow(self)
+            self.calibration.done.connect(self.on_calibration_done)
+        self.calibration.show()
+        self.calibration.raise_()
+        self.calibration.activateWindow()
+
+    def on_calibration_done(self):
+        self.calibration.deleteLater()
+        self.calibration = None
 
     def on_setup_done(self):
         self.setup.deleteLater()

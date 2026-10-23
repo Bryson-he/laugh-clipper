@@ -25,6 +25,11 @@ def test_settings_window_opens_cleanly(ctrl, qapp, monkeypatch):
     assert stray_windows_while(monkeypatch, qapp, lambda: SettingsWindow(ctrl)) == []
 
 
+def test_calibration_opens_cleanly(ctrl, qapp, monkeypatch):
+    from laughclipper.calibrate import CalibrationWindow
+    assert stray_windows_while(monkeypatch, qapp, lambda: CalibrationWindow(ctrl)) == []
+
+
 def test_setup_guide_opens_cleanly(ctrl, qapp, monkeypatch):
     from laughclipper.setup_guide import SetupGuide
     assert stray_windows_while(monkeypatch, qapp, lambda: SetupGuide(ctrl)) == []

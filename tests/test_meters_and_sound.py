@@ -22,6 +22,21 @@ def test_loudness_shows_quiet_sound():
     assert 0.2 < loudness(0.005) < loudness(0.05) < 1.0        # quiet Wave Link mic still shows something
 
 
+def test_meter_glides_and_holds_its_peak(qapp, monkeypatch):
+    from laughclipper.widgets import LevelMeter
+    m = LevelMeter()
+    m.set(0.6, 0.3, 0.5)
+    assert m.bar.target == pytest.approx(0.6) and m.bar.value < 0.6        # glides there, doesn't jump
+    assert m.peak.value == pytest.approx(0.6)                                # the peak marker jumps up
+    m.set(0.1, 0.3)
+    assert m.peak.target == pytest.approx(0.6)                               # and holds for a moment
+    monkeypatch.setattr(LevelMeter, "PEAK_HOLD", 0)
+    m.set(0.1, 0.3)
+    assert m.peak.target == pytest.approx(0.1)                               # then sinks back down
+    m.set(None, 0.3)
+    assert m.level is None and m.bar.target == 0.0                           # source off: no score bar
+
+
 class OpenWindow:
     def __init__(self, visible=True, minimized=False):
         self.visible, self.minimized = visible, minimized

@@ -366,20 +366,43 @@ def loudness(rms):
 
 class LevelMeter(QWidget):
     """Thin capsule meter with a tick at the trigger level. A soft fill behind shows how loud the sound is;
-    the bar on top is the laugh (or cheer…) score, and turns green above the tick."""
+    the bar on top is the laugh (or cheer…) score, and turns green above the tick. Both glide on springs,
+    and a thin marker holds the recent peak score for a couple of seconds so it's easy to read."""
+    PEAK_HOLD = 2.0          # seconds the peak marker stays put before sinking
 
     def __init__(self, width=90, parent=None):
         super().__init__(parent)
         self.setFixedSize(width, 16)
-        self.level = None
-        self.volume = 0.0
+        self.level = None                                  # None = this source is off: no score bar
         self.threshold = 0.3
+        self.anim = AnimDriver(self)
+        self.bar = self.anim.spring(0.0, 0.16, 1.0)        # score
+        self.loud = self.anim.spring(0.0, 0.1, 1.0)        # loudness
+        self.peak = self.anim.spring(0.0, 0.9, 1.0)        # peak marker, sinks slowly
+        self.peak_at = -1e9
+        self.clock = QElapsedTimer()
+        self.clock.start()
 
     def set(self, level, threshold, volume=0.0):
-        volume = round(volume or 0.0, 3)
-        if level != self.level or threshold != self.threshold or volume != self.volume:
-            self.level, self.threshold, self.volume = level, threshold, volume
+        """level: score 0-1 (or None when off), threshold: where the tick goes, volume: loudness 0-1."""
+        now = self.clock.elapsed() / 1000
+        on = isinstance(level, float)
+        lv = clamp(level) if on else 0.0
+        if threshold != self.threshold or on != (self.level is not None):
+            self.threshold = threshold
             self.update()
+        self.level = lv if on else None
+        if abs(self.bar.target - lv) > 1e-4:
+            self.anim.to(self.bar, lv)
+        vol = clamp(volume or 0.0)
+        if abs(self.loud.target - vol) > 1e-4:
+            self.anim.to(self.loud, vol)
+        if lv > 0.02 and lv >= self.peak.target:
+            self.peak.snap(lv)                             # a new high: the marker jumps there and holds
+            self.peak_at = now
+            self.update()
+        elif now - self.peak_at >= self.PEAK_HOLD and abs(self.peak.target - lv) > 1e-4:
+            self.anim.to(self.peak, lv)
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -388,13 +411,19 @@ class LevelMeter(QWidget):
         p.setPen(NO_PEN)
         p.setBrush(T.c("meter_bg"))
         p.drawRoundedRect(QRectF(0, cy - 2.5, w, 5), 2.5, 2.5)
-        if self.volume > 0.01:
+        loud = clamp(self.loud.value)
+        if loud > 0.01:
             p.setBrush(with_alpha(T.c("meter_idle"), 0.45))
-            p.drawRoundedRect(QRectF(0, cy - 2.5, max(5, w * self.volume), 5), 2.5, 2.5)
-        lvl = self.level
-        if isinstance(lvl, float) and lvl > 0.004:
-            p.setBrush(T.c("green") if lvl >= self.threshold else T.c("accent"))
-            p.drawRoundedRect(QRectF(0, cy - 2.5, max(5, w * min(lvl, 1.0)), 5), 2.5, 2.5)
+            p.drawRoundedRect(QRectF(0, cy - 2.5, max(5, w * loud), 5), 2.5, 2.5)
+        if self.level is not None:
+            bar = clamp(self.bar.value)
+            if bar > 0.004:
+                p.setBrush(T.c("green") if bar >= self.threshold else T.c("accent"))
+                p.drawRoundedRect(QRectF(0, cy - 2.5, max(5, w * bar), 5), 2.5, 2.5)
+            peak = clamp(self.peak.value)
+            if peak > 0.02:
+                p.setBrush(T.c("green") if peak >= self.threshold else T.c("accent"))
+                p.drawRoundedRect(QRectF(w * peak - 1, cy - 4.5, 2, 9), 1, 1)
         x = w * self.threshold
         p.setBrush(with_alpha(T.c("text"), 0.55))
         p.drawRoundedRect(QRectF(x - 1, cy - 6, 2, 12), 1, 1)

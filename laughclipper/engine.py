@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 
 SR = 48000
 HOP = 0.25                 # analyse a 1 s window every 0.25 s
+CHUNK = 0.05               # audio is read in 50 ms pieces, so the loudness meter updates 20 times a second
 KEEP_RATIO = 0.55          # once laughing, a score above 55% of the trigger keeps it "still laughing"
 # sounds you can trigger on: key -> (name, "still ..." text, YAMNet class names)
 SOUNDS = {
@@ -163,6 +164,8 @@ class Engine(QObject):
         self.levels = {}     # key -> latest trigger score, or "loading" / "error"
         self.sound = {}      # key -> (which sound that score is for, its raw score)
         self.heard = {}      # key -> (top sound, volume)
+        self.volume = {}     # key -> loudness (RMS) of the last 50 ms, for the meters
+        self.scores = {}     # key -> every sound's latest score, e.g. {"laughter": 0.4, "cheering": 0.1}
         self.activity = {}   # key -> last time the score was above the keep-alive level
         self.gated = False   # True while waiting for a game: keep recording, but don't classify
 
@@ -180,7 +183,7 @@ class Engine(QObject):
         for key in list(self.threads):
             if key not in wanted:
                 self.threads.pop(key).set()
-                for d in (self.levels, self.sound, self.heard, self.activity):
+                for d in (self.levels, self.sound, self.heard, self.activity, self.volume, self.scores):
                     d.pop(key, None)
         for key in wanted - set(self.threads):
             stop = threading.Event()
@@ -250,25 +253,34 @@ class Engine(QObject):
 
             log.info("listening on: %s", dev.name)
             window = np.zeros(SR, dtype=np.float32)
-            hop_n = int(SR * HOP)
+            chunk_n = int(SR * CHUNK)
+            per_hop = round(HOP / CHUNK)
+            chunks = 0
             trigger = TriggerWindow()
             source = source_id(key)
             try:
                 with dev.recorder(samplerate=SR) as rec:
                     while not stop.is_set():
-                        block = rec.record(numframes=hop_n)
+                        # read in small chunks so the loudness meter moves smoothly; classify every HOP
+                        block = rec.record(numframes=chunk_n)
                         mono = (block.mean(axis=1) if block.ndim > 1 else block).astype(np.float32)
                         window = np.concatenate([window[len(mono):], mono])
-                        vol = float(np.sqrt(np.mean(mono ** 2)))
+                        self.volume[key] = float(np.sqrt(np.mean(mono ** 2)))
+                        chunks += 1
+                        if chunks % per_hop:
+                            continue
+                        vol = float(np.sqrt(np.mean(window[-chunk_n * per_hop:] ** 2)))
 
                         if self.gated:
                             self.levels[key] = 0.0
                             self.heard[key] = ("paused", vol)
+                            self.scores.pop(key, None)
                             trigger.clear()
                             continue
                         if float(np.sqrt(np.mean(window ** 2))) < S["silence_level"]:
                             self.levels[key] = 0.0
                             self.heard[key] = ("silence", vol)
+                            self.scores.pop(key, None)
                             trigger.clear()
                             continue
 
@@ -278,6 +290,7 @@ class Engine(QObject):
                         sound, score, strength = judge(scores, source)
                         self.levels[key] = strength * S["threshold"]    # meters show every sound against one tick
                         self.sound[key] = (sound, score)
+                        self.scores[key] = scores
                         self.heard[key] = (top, vol)
                         if strength >= KEEP_RATIO:
                             self.activity[key] = time.time()

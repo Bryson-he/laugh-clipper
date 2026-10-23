@@ -102,6 +102,7 @@ class Theme(QObject):
         QPushButton:disabled {{ color: {c('tertiary')}; }}
         QPushButton#prominent {{ background: {c('accent')}; color: white; font-weight: 600; }}
         QPushButton#prominent:hover {{ background: {c('accent_hover')}; }}
+        QPushButton#prominent:disabled {{ background: {c('control')}; color: {c('tertiary')}; }}
         QPushButton#small {{ padding: 2px 10px; font-size: 12px; min-height: 16px; }}
         QScrollArea {{ background: transparent; border: none; }}
         QScrollBar:vertical {{ background: transparent; width: 10px; margin: 4px 2px; }}

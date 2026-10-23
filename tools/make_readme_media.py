@@ -43,7 +43,7 @@ from laughclipper import app as appmod, config, medal, settings_window, theme, t
 from laughclipper.config import S  # noqa: E402
 from laughclipper.theme import T  # noqa: E402
 
-VERSION = "1.3.0"
+VERSION = "1.4.0"
 MICS = ["Wave:3 Mic (Elgato Wave:3)", "Headset Microphone (Arctis Nova Pro Wireless)"]
 SPEAKERS = ["Game (Elgato Virtual Audio)", "Voice Chat (Elgato Virtual Audio)", "Browser (Elgato Virtual Audio)",
             "Music (Elgato Virtual Audio)", "System (Elgato Virtual Audio)"]
@@ -81,6 +81,7 @@ LIVE = {("mic", ""): (0.64, "laughter", "Laughter", 0.09),          # score, sou
 for key, (level, sound, heard, vol) in LIVE.items():
     eng.threads[key] = threading.Event()
     eng.levels[key], eng.sound[key], eng.heard[key] = level, (sound, level), (heard, vol)
+    eng.volume[key] = vol
 ctrl.check_game()
 S["sound_levels"] = {"cheering": 0.4}
 S["sound_sources"] = {"cheering": ["mic", f"out:{SPEAKERS[1]}"]}
@@ -197,6 +198,17 @@ def set_theme(dark):
         wd.update()
 
 
+def settle_meters(w):
+    """Meters glide on springs, which don't run offscreen: jump them to where they're heading, with the
+    peak marker a little above the bar as if a laugh just peaked."""
+    from laughclipper.widgets import LevelMeter
+    for m in w.findChildren(LevelMeter):
+        m.bar.snap(m.bar.target)
+        m.loud.snap(m.loud.target)
+        m.peak.snap(min(1.0, m.bar.target * 1.25) if m.level is not None and m.bar.target > 0.05 else 0.0)
+        m.update()
+
+
 def window_shots():
     w = settings_window.SettingsWindow(ctrl)
     w.build_devices(MICS, SPEAKERS, SPEAKERS[0])
@@ -217,6 +229,7 @@ def window_shots():
             for _ in range(3):
                 w.refresh_live()
                 app.processEvents()
+            settle_meters(w)
             shot = framed(w.grab().toImage())
             name = f"settings-{title.lower()}-{'dark' if dark else 'light'}.png"
             save_png(shot, name)

@@ -103,7 +103,7 @@ class SetupGuide(QWidget):
         ctrl.devices_changed.connect(lambda *_: self.build_sources())
         T.changed.connect(self.apply_titlebar)
         self.live = QTimer(self)
-        self.live.setInterval(60)
+        self.live.setInterval(40)
         self.live.timeout.connect(self.refresh_live)
         self.live.start()
         self.go(0, animate=False)
@@ -339,8 +339,8 @@ class SetupGuide(QWidget):
         return eng.sound.get(key, (None, 0.0))[1] if key in eng.threads else None
 
     def volume(self, key):
-        info = self.ctrl.engine.heard.get(key) if key in self.ctrl.engine.threads else None
-        return loudness(info[1]) if info else 0.0
+        eng = self.ctrl.engine
+        return loudness(eng.volume.get(key)) if key in eng.threads else 0.0
 
     def refresh_live(self):
         if not self.isVisible():

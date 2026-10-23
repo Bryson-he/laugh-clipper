@@ -123,7 +123,10 @@ button to jump straight to the file.
 
 - **Quick setup:** a short guide on first launch sets your Medal hotkey and audio, and finds the right trigger level
   from a few seconds of laughing.
-- **Tune it to your voice:** watch the live score while you laugh, then set the trigger level just below it.
+- **Tune it to your voice:** smooth live meters with a marker that holds your recent peak, so you can set the
+  trigger level just below where your laughs land.
+- **Calibrate for your game (optional):** it listens to your game for a minute, then to you laughing, and suggests
+  a trigger level that catches your laughs but not the game's own sounds.
 - **Optional sound:** a soft chime (or a pop, marimba or bell) when the popup appears, on any output you choose. Handy
   in exclusive-fullscreen games where the popup can't show.
 - **Tray icon shows what it's doing:** grey when paused, an orange dot when it's waiting for a game or Medal is closed.
@@ -165,7 +168,7 @@ The setup guide walks you through this on first launch (and any time from **Gene
 2. **Pick what to listen to.** On the **Audio** page, turn on your mic and the outputs your game and voice chat
    play through.
 3. **Tune it.** On the **Detection** page, laugh a few times and watch the live score, then set the trigger level a
-   little below where it peaks.
+   little below where it peaks. Or click **Calibrate…** with your game running and let it work it out.
 4. **Try it:** right-click the tray icon → **Show Test Notification**.
 
 > [!TIP]
@@ -199,7 +202,8 @@ Medal's exactly.
 <details>
 <summary><b>It goes off when nobody's laughing.</b></summary>
 
-Raise the **Trigger level** on the Detection page, or make **Length needed** a bit longer. Turn off any
+Run **Detection → Calibrate…** with your game going, or raise the **Trigger level** by hand, or make
+**Length needed** a bit longer. Turn off any
 music or browser outputs on the Audio page, and try **Only listen while playing**.
 </details>
 
@@ -270,6 +274,7 @@ hours, or straight away with **Check for Updates**.
 | `laughclipper/updater.py` | Checks GitHub Releases and installs updates |
 | `laughclipper/clips.py` | Checks Medal saved each clip, and the clip history |
 | `laughclipper/setup_guide.py` | The first-run setup guide |
+| `laughclipper/calibrate.py` | "Calibrate for your game": measures the game and your laughs, suggests a level |
 | `laughclipper/medal.py` | Reads Medal's hotkeys and spots when it's recording |
 | `laughclipper/sounds.py` | The optional notification sounds (made in code) |
 | `laughclipper/winutil.py` | Windows bits: startup, foreground app, process checks |

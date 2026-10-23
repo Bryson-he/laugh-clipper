@@ -53,7 +53,8 @@ def test_missing_or_broken_settings(tmp_path, monkeypatch):
 
 
 def test_recording_marker(tmp_path, monkeypatch):
-    monkeypatch.setattr(medal, "RECORDING_MIN_AGE", 0)
+    # a marker made a moment ago can carry a creation time a hair *after* time.time(); count it anyway
+    monkeypatch.setattr(medal, "RECORDING_MIN_AGE", -5)
     assert medal.is_recording(tmp_path) is False             # no Temp folder
     (tmp_path / "Temp").mkdir()
     (tmp_path / "Temp" / "MedalTVRocketLeague20261022163843575.mp4.cicap").write_bytes(b"")
