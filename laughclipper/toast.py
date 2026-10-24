@@ -123,11 +123,12 @@ class Toast(QWidget):
         self._switch("saving")
         self.close_at = None
 
-    def set_saved(self, game=None):
+    def set_saved(self, game=None, length=None):
         if self.mode == "saved" or self.closing:
             return
         self._switch("saved")
-        self.saved_sub = f"In Medal  ·  {game}" if game else "Sent to Medal"
+        parts = [f"{length} s clip" if length else "In Medal"] + ([game] if game else [])
+        self.saved_sub = "  ·  ".join(parts) if game or length else "Sent to Medal"
         self.check.snap(0.0)
         self.check.target = 1.0
         self.close_at = self.t + 1.5

@@ -124,6 +124,7 @@ def new_entry(moment, status, path=""):
         "game": moment.get("game") or (Path(path).parent.name if path else ""),
         "score": round(float(moment.get("peak", 0.0)), 2),
         "auto": bool(moment.get("auto")),
+        "length": int(moment.get("length") or 0),     # clip length used (s), 0 = unknown
         "status": status,           # "saved" | "failed" | "unchecked" (no clips folder to check)
         "file": path,
     }

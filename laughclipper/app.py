@@ -26,6 +26,7 @@ log = logging.getLogger("laughclipper")
 SERVER_NAME = "LaughClipper-single-instance"
 MUTEX_NAME = "LaughClipperRunning"
 GAME_GRACE = 5               # keep listening this many seconds after you alt-tab out of a game
+PRE_ROLL = 10                # seconds before a laugh worth keeping in the clip (whatever was funny)
 
 
 def badged(pix, state):
@@ -130,6 +131,7 @@ class Controller(QObject):
         self.window = None
         self.setup = None
         self.calibration = None
+        self.whats_new = None
         self.toast = None
         self.toast_is_test = False
         self.pending = None
@@ -392,7 +394,8 @@ class Controller(QObject):
         kind, name = key
         label = "Your mic" if kind == "mic" else short_name(name)
         self.moment = {"key": key, "sound": sound, "source": label, "game": self.game, "auto": S["auto_clip"],
-                       "peak": self.engine.sound.get(key, (None, 0.0))[1]}
+                       "peak": self.engine.sound.get(key, (None, 0.0))[1],
+                       "began": now - S["min_laugh"]}      # it had been going this long before it triggered
         if not self.check_medal():
             log.info("not clipping: Medal isn't running")
             self.show_toast("nomedal", label, sound)
@@ -444,9 +447,40 @@ class Controller(QObject):
                 self.toast.set_bookmarked()
             self.record("bookmarked")
             return
-        QTimer.singleShot(60, self.send_hotkey)
-        log.info("clip: hotkey sent")
+        key, length = self.clip_key()
+        if self.moment is not None:
+            self.moment["length"] = length
+        QTimer.singleShot(60, lambda: self.send_hotkey(key))
+        log.info("clip: hotkey %s sent%s", key, f" ({length} s clip)" if length else "")
         self.after_clip()
+
+    def moment_seconds(self):
+        """How long the moment has been going: from the start of the laugh until now."""
+        began = (self.moment or {}).get("began")
+        return max(0.0, time.time() - began) if began else 0.0
+
+    def laugh_seconds(self):
+        """How long the laughing itself went on: from when it started to the last laugh sound (not the wait
+        after it). At least `min_laugh`, since that's what it took to trigger."""
+        began = (self.moment or {}).get("began")
+        if not began:
+            return 0.0
+        last = max(self.engine.last_activity(), began + S["min_laugh"])
+        return max(0.0, min(time.time(), last) - began)
+
+    def clip_key(self):
+        """(hotkey to press, its clip length in seconds or 0 if unknown). With smart length on, your own clip
+        hotkey for short laughs, one of Medal's longer ones for every `long_laugh` seconds of laughing, and
+        always long enough to cover the whole moment plus a little build-up before it."""
+        clip_keys = medal.clip_hotkeys()
+        base = next((i for i, (n, hk) in enumerate(clip_keys) if hk == S["hotkey"]), None)
+        if not (S["smart_length"] and base is not None and len(clip_keys) > 1):
+            return S["hotkey"], clip_keys[base][0] if base is not None else 0
+        steps = int(self.laugh_seconds() // max(S["long_laugh"], 1))
+        needed = self.moment_seconds() + PRE_ROLL
+        fits = next((i for i, (n, _) in enumerate(clip_keys) if n >= needed), len(clip_keys) - 1)
+        n, hk = clip_keys[min(len(clip_keys) - 1, max(base + steps, fits))]
+        return hk, n
 
     def after_clip(self):
         """The hotkey went to Medal: check a new clip file turns up, then log it in the history."""
@@ -464,7 +498,7 @@ class Controller(QObject):
     def on_clip_found(self, path):
         log.info("clip saved: %s", path)
         if self.toast:
-            self.toast.set_saved(Path(path).parent.name)
+            self.toast.set_saved(Path(path).parent.name, (self.moment or {}).get("length"))
         self.record("saved", path)
 
     def on_clip_missing(self):
@@ -626,6 +660,20 @@ class Controller(QObject):
         self.calibration.raise_()
         self.calibration.activateWindow()
 
+    def show_whats_new(self):
+        """The release notes for this version (after an update, or from the General page)."""
+        if self.whats_new is None:
+            from .whatsnew import WhatsNewWindow
+            self.whats_new = WhatsNewWindow(self, VERSION)
+            self.whats_new.done.connect(self.on_whats_new_done)
+        self.whats_new.show()
+        self.whats_new.raise_()
+        self.whats_new.activateWindow()
+
+    def on_whats_new_done(self):
+        self.whats_new.deleteLater()
+        self.whats_new = None
+
     def on_calibration_done(self):
         self.calibration.deleteLater()
         self.calibration = None
@@ -671,6 +719,16 @@ def setup_logging():
                                                exc_info=(a.exc_type, a.exc_value, a.exc_traceback))
 
 
+def whats_new_due(first_run, version):
+    """Show "What's new" once after an update to `version`. A new install gets the setup guide instead."""
+    from .whatsnew import notes
+    due = not first_run and S["last_seen_version"] != version and bool(notes(version))
+    if S["last_seen_version"] != version:
+        S["last_seen_version"] = version
+        config.save()
+    return due
+
+
 def run():
     winutil.set_app_id("LaughClipper.App")
     app = QApplication(sys.argv)
@@ -705,6 +763,8 @@ def run():
         conn.disconnected.connect(conn.deleteLater)
     server.newConnection.connect(on_connection)
 
+    if whats_new_due(first_run, VERSION):
+        QTimer.singleShot(1500, ctrl.show_whats_new)
     if first_run or not S["setup_done"]:
         ctrl.show_setup()
     elif not ("--minimized" in sys.argv or S["start_minimized"]):

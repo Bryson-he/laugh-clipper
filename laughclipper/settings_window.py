@@ -361,7 +361,11 @@ class SettingsWindow(QWidget):
         g = p.section("Updates")
         self.upd_btn = QPushButton("Check for Updates")
         self.upd_btn.clicked.connect(self.update_clicked)
-        self.upd_row = g.add(Row("Laugh Clipper", f"Version {VERSION}", self.upd_btn))
+        whats_new = QPushButton("What's New")
+        whats_new.clicked.connect(self.ctrl.show_whats_new)
+        from .whatsnew import notes
+        whats_new.setVisible(bool(notes(VERSION)))
+        self.upd_row = g.add(Row("Laugh Clipper", f"Version {VERSION}", whats_new, self.upd_btn))
         g.add(Row("Check for updates automatically", None, self.switch("check_updates")))
         return p.finish()
 
@@ -479,6 +483,14 @@ class SettingsWindow(QWidget):
         self.maxwait_row = self.slider_row(g, "Save anyway after", "In case the laughing just won't stop.",
                                            "max_wait", 0, 120, 5, lambda v: "Never" if v == 0 else secs(v))
         self.update_auto_rows()
+        self.smart_row = g.add(Row("Pick the clip length to fit the moment",
+                                   "Uses Medal's longer clip hotkeys for long laughs, so the start isn't cut off.",
+                                   self.switch("smart_length")))
+        self.long_row = self.slider_row(g, "Use a longer clip after laughing for",
+                                        "Each time the laughing goes on this long, it moves up to Medal's next "
+                                        "clip length.", "long_laugh", 3, 30, 1, secs)
+        self.length_warn = g.add(Row("The start of a moment could get cut off", ""))
+        self.length_warn.layout().insertWidget(0, WarningBadge(), 0, Qt.AlignmentFlag.AlignVCenter)
 
         g = p.section("Clip check", footer="After the hotkey, Laugh Clipper looks for the new clip in Medal's "
                                            "folder, so the popup only says “Clip saved” when it really was.")
@@ -551,6 +563,7 @@ class SettingsWindow(QWidget):
                                   "instead of the clip hotkey." if bm else
                                   "Set Medal's bookmark hotkey below first.")
         self.update_rec_pill()
+        self.update_clip_length()
 
     def record_bookmark_key(self):
         self.bm_keycap.recording = True
@@ -660,6 +673,7 @@ class SettingsWindow(QWidget):
             title = f"{name}  ·  {it['game']}" if it.get("game") else name
             score = it.get("score") or 0
             sub = "  ·  ".join(x for x in (when(it["time"]), it.get("source", ""),
+                                           f"{it['length']} s clip" if it.get("length") else "",
                                            f"score {score:.2f}" if score else "", "auto-saved" if it.get("auto") else "")
                                if x)
             status = it.get("status")
@@ -844,6 +858,47 @@ class SettingsWindow(QWidget):
         self.keycap.set_label("Press keys…")
         self.ctrl.record_hotkey()
 
+    def update_clip_length(self):
+        """Smart length works when Medal has several clip lengths and ours is one of them; otherwise its rows
+        are greyed out and say why. Also warn when a moment can last longer than the clip Medal saves."""
+        from .app import PRE_ROLL
+        clip_keys = getattr(self, "medal_clip_keys", [])
+        current = next((n for n, hk in clip_keys if hk == S["hotkey"]), 0)
+        usable = len(clip_keys) > 1 and current > 0
+        if usable:
+            why = "Uses Medal's longer clip hotkeys for long laughs, so the start isn't cut off."
+        elif len(clip_keys) == 1:
+            why = ("Medal only has one clip length set up. Add more clip hotkeys in Medal's settings "
+                   "(like 60 s and 120 s) to use this.")
+        elif clip_keys:
+            why = "Set your clip hotkey to one of Medal's (above) to use this."
+        else:
+            why = "Needs Medal's clip hotkeys, which couldn't be read. Set up clip hotkeys in Medal to use this."
+        self.smart_row.set_sub(why)
+        self.smart_row.setEnabled(usable)
+        self.long_row.setEnabled(usable and S["smart_length"])
+        if not current:
+            self.length_warn.setVisible(False)
+            return
+        longest = max(n for n, _ in clip_keys) if S["smart_length"] and len(clip_keys) > 1 else current
+        if S["auto_clip"] and S["clip_delay"] > 0 and S["max_wait"] == 0:
+            self.length_warn.set_sub("“Save anyway after” is set to Never, so a long laugh can run past Medal's "
+                                     f"{longest} s clip. Set a time there.")
+            self.length_warn.setVisible(True)
+            return
+        wait = S["max_wait"] if S["auto_clip"] and S["clip_delay"] > 0 else S["popup_seconds"]
+        worst = round(PRE_ROLL + S["min_laugh"] + wait)
+        first = "Lower “Save anyway after”" if S["auto_clip"] and S["clip_delay"] > 0 else "Click Clip sooner"
+        if len(clip_keys) > 1 and not S["smart_length"]:
+            fixes = f"{first}, or turn on “Pick the clip length to fit the moment”."
+        elif len(clip_keys) > 1:
+            fixes = f"{first}, or add a longer clip hotkey in Medal."
+        else:
+            fixes = f"{first}, or set a longer clip length in Medal."
+        self.length_warn.set_sub(f"A moment can last about {worst} s, counting {PRE_ROLL} s before the laugh, "
+                                 f"but Medal's clip is {longest} s. {fixes}")
+        self.length_warn.setVisible(worst > longest)
+
     def update_auto_rows(self):
         for row in (self.delay_row, self.maxwait_row):
             row.setEnabled(S["auto_clip"])
@@ -885,6 +940,8 @@ class SettingsWindow(QWidget):
             self.build_games()
         if key == "auto_clip":
             self.update_auto_rows()
+        if key in ("hotkey", "smart_length", "clip_delay", "max_wait", "min_laugh", "auto_clip", "popup_seconds"):
+            self.update_clip_length()
         if key == "triggers":
             for k, sw in self.trigger_sw.items():
                 sw.set_silent(k in S["triggers"])

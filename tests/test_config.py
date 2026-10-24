@@ -73,6 +73,10 @@ def test_new_options_are_cleaned():
     load({"sound_volume": 250, "bookmark_hotkey": 5, "clips_folder": None, "sound_device": ["x"]})
     assert S["sound_volume"] == 100 and S["bookmark_hotkey"] == "" and S["clips_folder"] == ""
     assert S["sound_device"] == ""
+    load({"long_laugh": 100})
+    assert S["long_laugh"] == 30 and S["smart_length"] is False
+    load({"long_laugh": "x"})
+    assert S["long_laugh"] == DEFAULTS["long_laugh"]
     load({"sound_name": "airhorn"})
     assert S["sound_name"] == "chime"
     load({"sound_name": "marimba"})

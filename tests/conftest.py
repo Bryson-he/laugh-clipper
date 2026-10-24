@@ -71,13 +71,13 @@ class FakeToast:
 
     def __init__(self, mode):
         self.mode = mode
-        self.game = None
+        self.game = self.length = None
 
     def set_saving(self):
         self.mode = "saving"
 
-    def set_saved(self, game=None):
-        self.mode, self.game = "saved", game
+    def set_saved(self, game=None, length=None):
+        self.mode, self.game, self.length = "saved", game, length
 
     def set_failed(self, seconds):
         self.mode = "failed"

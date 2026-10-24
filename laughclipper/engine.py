@@ -3,6 +3,7 @@
 import ctypes
 import logging
 import math
+import struct
 import sys
 import threading
 import time
@@ -55,9 +56,56 @@ def get_soundcard():
         if _SC is None:
             import soundcard
             warnings.filterwarnings("ignore", category=soundcard.SoundcardRuntimeWarning)
+            _patch_soundcard()
             _SC = soundcard
     com_init()
     return _SC
+
+
+# KSDATAFORMAT_SUBTYPE_IEEE_FLOAT, {00000003-0000-0010-8000-00AA00389B71}
+_FLOAT_GUID = struct.pack("<IHH", 3, 0, 0x10) + bytes([0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71])
+
+
+def _patch_soundcard():
+    """soundcard 0.4.6 can only open devices whose own format is described as WAVE_FORMAT_EXTENSIBLE
+    float. Plenty of real microphones (Elgato's XLR Dock, headset mics…) describe theirs as plain float or
+    PCM, and soundcard fails on them with a bare AssertionError. When that happens, open the device again
+    asking Windows for 32-bit float in the extensible form; Windows converts (soundcard already asks it to).
+    Devices that opened fine before never reach the fallback."""
+    if sys.platform != "win32":
+        return
+    from soundcard import mediafoundation as mf
+    if getattr(mf, "_laughclipper_patched", False):
+        return
+    original = mf._AudioClient.__init__
+
+    def init(self, ptr, samplerate, channels, blocksize, isloopback, exclusive_mode=False):
+        try:
+            return original(self, ptr, samplerate, channels, blocksize, isloopback, exclusive_mode)
+        except AssertionError:
+            pass                       # the format check failed; self._ptr and self.channelmap are already set
+        if blocksize is None:
+            blocksize = self.deviceperiod[0] * samplerate
+        n = len(set(self.channelmap))
+        rate = int(samplerate)
+        # packed WAVEFORMATEXTENSIBLE: tag, channels, rate, bytes/s, block align, bits, cbSize, valid bits,
+        # channel mask, sub-format
+        raw = struct.pack("<HHIIHHHHI", 0xFFFE, n, rate, rate * n * 4, n * 4, 32, 22, 32, (1 << n) - 1)
+        buf = mf._ffi.new("char[]", raw + _FLOAT_GUID + bytes(8))
+        sharemode = mf._ole32.AUDCLNT_SHAREMODE_EXCLUSIVE if exclusive_mode else mf._ole32.AUDCLNT_SHAREMODE_SHARED
+        streamflags = 0x00100000 | 0x80000000 | 0x08000000 | 0x00080000      # same flags soundcard uses
+        if isloopback:
+            streamflags |= 0x00020000
+        hr = self._ptr[0][0].lpVtbl.Initialize(self._ptr[0], sharemode, streamflags,
+                                                int(blocksize / samplerate * 10000000), 0,
+                                                mf._ffi.cast("WAVEFORMATEXTENSIBLE*", buf), mf._ffi.NULL)
+        mf._com.check_error(hr)
+        self._laughclipper_format = buf    # keep the format alive as long as the client
+        self.samplerate = samplerate
+        self._idle_start_time = None
+
+    mf._AudioClient.__init__ = init
+    mf._laughclipper_patched = True
 
 
 def short_name(device_name):

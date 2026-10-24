@@ -127,6 +127,9 @@ button to jump straight to the file.
   trigger level just below where your laughs land.
 - **Calibrate for your game (optional):** it listens to your game for a minute, then to you laughing, and suggests
   a trigger level that catches your laughs but not the game's own sounds.
+- **Longer clips for longer laughs:** with a few clip lengths set up in Medal (30, 60, 120 s…), it picks a longer
+  one when the laughing goes on, so the start of a big moment isn't cut off.
+- **What's new:** after each update, a short summary of what changed.
 - **Optional sound:** a soft chime (or a pop, marimba or bell) when the popup appears, on any output you choose. Handy
   in exclusive-fullscreen games where the popup can't show.
 - **Tray icon shows what it's doing:** grey when paused, an orange dot when it's waiting for a game or Medal is closed.
@@ -274,6 +277,7 @@ hours, or straight away with **Check for Updates**.
 | `laughclipper/updater.py` | Checks GitHub Releases and installs updates |
 | `laughclipper/clips.py` | Checks Medal saved each clip, and the clip history |
 | `laughclipper/setup_guide.py` | The first-run setup guide |
+| `laughclipper/whatsnew.py` | "What's new" window (bundled release notes) |
 | `laughclipper/calibrate.py` | "Calibrate for your game": measures the game and your laughs, suggests a level |
 | `laughclipper/medal.py` | Reads Medal's hotkeys and spots when it's recording |
 | `laughclipper/sounds.py` | The optional notification sounds (made in code) |

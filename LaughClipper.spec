@@ -5,6 +5,7 @@ datas = [
     ("assets/icon.png", "assets"),
     ("assets/icon.ico", "assets"),
     ("models/yamnet.tflite", "models"),
+    ("release-notes", "release-notes"),      # for "What's new" after an update
 ]
 binaries = []
 hiddenimports = ["keyboard"]

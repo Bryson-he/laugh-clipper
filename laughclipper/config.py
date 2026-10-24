@@ -38,6 +38,8 @@ DEFAULTS = {
     "clips_folder": "",        # Medal's clips folder; "" = find it (X:\Medal\Clips)
     "bookmark_when_recording": False,  # while Medal is recording, press its bookmark key instead of clipping
     "bookmark_hotkey": "",     # Medal's bookmark hotkey; "" = read it from Medal's settings
+    "smart_length": False,     # pick the Medal clip hotkey (30/60/120 s…) whose length fits the moment
+    "long_laugh": 8,           # smart length: each this-many seconds of laughing moves up one clip length
     # sound cue
     "sound_cue": False,        # play a short chime when the popup appears
     "sound_volume": 50,        # 0-100
@@ -60,6 +62,7 @@ DEFAULTS = {
     "silence_level": 0.0015,
     # app
     "setup_done": False,       # the first-run setup guide has been seen
+    "last_seen_version": "",   # "What's new" was shown for this version ("" = not since it existed)
     "start_minimized": False,
     "check_updates": True,
 }
@@ -100,12 +103,15 @@ def load():
         S["sound_sources"] = {k: [s for s in v if isinstance(s, str)] for k, v in sources.items()
                               if k in SOUNDS and isinstance(v, list) and any(isinstance(s, str) for s in v)}
         S["games"] = clean_games(S["games"])
-        for key in ("clips_folder", "bookmark_hotkey", "sound_device"):
+        for key in ("clips_folder", "bookmark_hotkey", "sound_device", "last_seen_version"):
             if not isinstance(S[key], str):
                 S[key] = ""
         if not isinstance(S["sound_volume"], (int, float)) or isinstance(S["sound_volume"], bool):
             S["sound_volume"] = DEFAULTS["sound_volume"]
         S["sound_volume"] = int(min(max(S["sound_volume"], 0), 100))
+        if not isinstance(S["long_laugh"], (int, float)) or isinstance(S["long_laugh"], bool):
+            S["long_laugh"] = DEFAULTS["long_laugh"]
+        S["long_laugh"] = int(min(max(S["long_laugh"], 3), 30))
         from .sounds import SOUNDS as CUES
         if S["sound_name"] not in CUES:
             S["sound_name"] = DEFAULTS["sound_name"]
