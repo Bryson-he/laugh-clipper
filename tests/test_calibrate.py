@@ -4,7 +4,6 @@ import threading
 
 import pytest
 
-from laughclipper import calibrate
 from laughclipper.calibrate import suggest
 from laughclipper.config import S
 

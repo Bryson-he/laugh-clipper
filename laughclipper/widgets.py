@@ -578,6 +578,43 @@ class StatusPill(QWidget):
         p.drawText(r.adjusted(19, 0, -8, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.text)
 
 
+class StatsBar(QWidget):
+    """A row of big numbers with small labels under them, split by hairlines (History page)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(74)
+        self.items = []
+
+    def set_items(self, items):
+        """items: [(value text, label)]"""
+        self.items = list(items)
+        self.update()
+
+    def paintEvent(self, _):
+        if not self.items:
+            return
+        p = QPainter(self)
+        p.setRenderHint(AA)
+        w = self.width() / len(self.items)
+        for n, (value, label) in enumerate(self.items):
+            r = QRectF(n * w, 0, w, self.height())
+            if n:
+                p.setPen(QPen(T.c("separator"), 1))
+                p.drawLine(QPointF(r.left(), 16), QPointF(r.left(), self.height() - 16))
+            p.setPen(T.c("text"))
+            size = 22                                   # shrink long values (a game's name) to fit the tile
+            while size > 13 and QFontMetricsF(T.font(size, 700, display=True)).horizontalAdvance(value) > w - 16:
+                size -= 1
+            p.setFont(T.font(size, 700, display=True))
+            fm = QFontMetricsF(p.font())
+            p.drawText(QRectF(r.left() + 8, 12, w - 16, 30), Qt.AlignmentFlag.AlignCenter,
+                       fm.elidedText(value, Qt.TextElideMode.ElideRight, w - 16))
+            p.setPen(T.c("secondary"))
+            p.setFont(T.font(11, 500))
+            p.drawText(QRectF(r.left() + 4, 44, w - 8, 18), Qt.AlignmentFlag.AlignCenter, label)
+
+
 class WarningBadge(QWidget):
     """Small orange circle with an exclamation mark, for rows that need attention."""
 

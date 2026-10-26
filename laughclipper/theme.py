@@ -116,7 +116,8 @@ class Theme(QObject):
         QMenu::item {{ padding: 5px 24px 5px 12px; border-radius: 5px; }}
         QMenu::item:selected {{ background: {c('accent')}; color: white; }}
         QMenu::separator {{ height: 1px; background: {c('separator')}; margin: 4px 8px; }}
-        QToolTip {{ background: {c('menu')}; color: {c('text')}; border: 1px solid {c('separator')}; padding: 4px 8px; }}
+        QToolTip {{ background: {c('menu')}; color: {c('text')}; border: 1px solid {c('separator')};
+                    padding: 4px 8px; }}
         """
 
 

@@ -7,3 +7,6 @@ models/*.tflite
 laugh_clipper_settings.json
 .venv/
 CLAUDE.md
+models/vosk/
+site/images/
+site/icon.png

@@ -5,13 +5,15 @@ datas = [
     ("assets/icon.png", "assets"),
     ("assets/icon.ico", "assets"),
     ("models/yamnet.tflite", "models"),
+    ("models/vosk", "models/vosk"),           # speech model for the "don't clip" voice command
     ("release-notes", "release-notes"),      # for "What's new" after an update
 ]
 binaries = []
 hiddenimports = ["keyboard"]
 
 # mediapipe and numpy ship native libraries + data files; soundcard reads its .h definitions at runtime
-for pkg in ("numpy", "mediapipe", "soundcard"):
+# vosk ships its own DLLs (libvosk + the MinGW runtime) next to the module
+for pkg in ("numpy", "mediapipe", "soundcard", "vosk"):
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b

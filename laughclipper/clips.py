@@ -115,6 +115,29 @@ def save_history(items):
         log.warning("Couldn't save the clip history: %s", e)
 
 
+def stats(items, now=None):
+    """Totals for the History page: clips saved, this week, the game with the most, best laugh, false alarms."""
+    now = now or datetime.now()
+    kept = [i for i in items if i.get("status") in ("saved", "unchecked", "bookmarked")]
+
+    def age_days(i):
+        try:
+            return (now - datetime.fromisoformat(i["time"])).total_seconds() / 86400
+        except (KeyError, TypeError, ValueError):
+            return 1e9
+    games = {}
+    for i in kept:
+        if i.get("game"):
+            games[i["game"]] = games.get(i["game"], 0) + 1
+    return {
+        "clips": len(kept),
+        "week": sum(1 for i in kept if age_days(i) <= 7),
+        "top_game": max(games, key=games.get) if games else "",
+        "best": max((float(i.get("score") or 0) for i in kept), default=0.0),
+        "not_funny": sum(1 for i in items if i.get("status") == "not_funny"),
+    }
+
+
 def new_entry(moment, status, path=""):
     """One history entry. moment: what the Controller knew about the laugh."""
     return {
@@ -125,6 +148,6 @@ def new_entry(moment, status, path=""):
         "score": round(float(moment.get("peak", 0.0)), 2),
         "auto": bool(moment.get("auto")),
         "length": int(moment.get("length") or 0),     # clip length used (s), 0 = unknown
-        "status": status,           # "saved" | "failed" | "unchecked" (no clips folder to check)
+        "status": status,   # "saved" | "failed" | "unchecked" (no folder to check) | "bookmarked" | "not_funny"
         "file": path,
     }

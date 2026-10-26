@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Laugh Clipper – never miss the funniest moment</title>
+<meta name="description" content="Laugh Clipper listens for laughter, cheering and screams while you play and saves a Medal clip for you. Free and open source for Windows.">
+<meta property="og:title" content="Laugh Clipper">
+<meta property="og:description" content="Never miss the funniest moment of the stream again. Free for Windows.">
+<meta property="og:image" content="images/hero.png">
+<link rel="icon" href="icon.png">
+<style>
+  :root {
+    --bg: #f5f5f7; --bg2: #ffffff; --card: #ffffff; --text: #1d1d1f; --muted: #6e6e73; --line: rgba(0,0,0,.08);
+    --accent: #007aff; --accent2: #5e5ce6; --green: #34c759; --shadow: 0 20px 60px rgba(0,0,0,.12);
+    --hero: radial-gradient(1200px 600px at 20% -10%, #dbe7ff 0%, transparent 60%),
+            radial-gradient(900px 500px at 100% 0%, #f3e3ff 0%, transparent 60%), var(--bg);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0b0f; --bg2: #121218; --card: #17171d; --text: #f5f5f7; --muted: #a1a1a6; --line: rgba(255,255,255,.09);
+      --accent: #0a84ff; --accent2: #7d7aff; --green: #30d158; --shadow: 0 20px 70px rgba(0,0,0,.55);
+      --hero: radial-gradient(1200px 600px at 15% -10%, #16234d 0%, transparent 60%),
+              radial-gradient(900px 500px at 100% 0%, #2c1648 0%, transparent 60%), var(--bg);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body { margin: 0; background: var(--bg); color: var(--text); line-height: 1.55;
+         font: 17px/1.55 "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "SF Pro Text", Inter, sans-serif;
+         -webkit-font-smoothing: antialiased; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  img { max-width: 100%; display: block; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
+
+  /* nav */
+  nav { position: sticky; top: 0; z-index: 10; backdrop-filter: saturate(180%) blur(18px);
+        -webkit-backdrop-filter: saturate(180%) blur(18px); background: color-mix(in srgb, var(--bg) 72%, transparent);
+        border-bottom: 1px solid var(--line); }
+  nav .wrap { display: flex; align-items: center; gap: 22px; height: 58px; }
+  nav .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; color: var(--text); font-size: 17px; }
+  nav .brand img { width: 28px; height: 28px; }
+  nav .links { margin-left: auto; display: flex; gap: 22px; font-size: 15px; }
+  nav .links a { color: var(--muted); }
+  nav .links a:hover { color: var(--text); text-decoration: none; }
+
+  /* buttons */
+  .btn { display: inline-flex; align-items: center; gap: 10px; padding: 14px 26px; border-radius: 999px; font-weight: 600;
+         font-size: 17px; transition: transform .25s cubic-bezier(.2,.9,.3,1.4), box-shadow .25s, background .2s; }
+  .btn:hover { text-decoration: none; transform: translateY(-2px) scale(1.02); }
+  .btn.primary { background: var(--accent); color: #fff; box-shadow: 0 10px 30px color-mix(in srgb, var(--accent) 40%, transparent); }
+  .btn.ghost { color: var(--text); border: 1px solid var(--line); background: var(--card); }
+  .btn svg { width: 20px; height: 20px; }
+
+  /* hero */
+  header.hero { background: var(--hero); padding: 84px 0 40px; overflow: hidden; }
+  .hero .wrap { display: grid; grid-template-columns: 1.05fr 1fr; gap: 48px; align-items: center; }
+  .hero h1 { font: 700 clamp(40px, 6vw, 68px)/1.04 "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+             letter-spacing: -.02em; margin: 18px 0 18px; }
+  .hero h1 span { background: linear-gradient(90deg, #ffb340, #ff6b6b 45%, #a463ff); -webkit-background-clip: text;
+                  background-clip: text; color: transparent; }
+  .hero p.lead { font-size: 20px; color: var(--muted); max-width: 34ch; margin: 0 0 30px; }
+  .hero .ctas { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .hero .meta { margin-top: 16px; font-size: 14px; color: var(--muted); }
+  .hero .icon { width: 84px; height: 84px; filter: drop-shadow(0 12px 24px rgba(255,159,10,.35));
+                animation: bob 5s ease-in-out infinite; }
+  @keyframes bob { 0%, 100% { transform: translateY(0) rotate(-3deg); } 50% { transform: translateY(-8px) rotate(3deg); } }
+  .hero .demo { border-radius: 24px; box-shadow: var(--shadow); }
+
+  /* sections */
+  section { padding: 90px 0; }
+  section.alt { background: var(--bg2); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  h2 { font: 700 clamp(30px, 4vw, 44px)/1.1 "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+       letter-spacing: -.015em; margin: 0 0 14px; text-align: center; }
+  .sub { color: var(--muted); text-align: center; max-width: 60ch; margin: 0 auto 50px; font-size: 19px; }
+
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: 26px; transition:
+          transform .35s cubic-bezier(.2,.9,.3,1.3), box-shadow .35s; }
+  .card:hover { transform: translateY(-4px); box-shadow: var(--shadow); }
+  .card .emoji { font-size: 30px; line-height: 1; }
+  .card h3 { margin: 14px 0 6px; font-size: 19px; }
+  .card p { margin: 0; color: var(--muted); font-size: 16px; }
+
+  .showcase { display: grid; grid-template-columns: 1fr 1fr; gap: 56px; align-items: center; margin-bottom: 90px; }
+  .showcase:last-child { margin-bottom: 0; }
+  .showcase.flip .text { order: 2; }
+  .showcase h3 { font-size: 30px; line-height: 1.15; margin: 0 0 14px; letter-spacing: -.01em; }
+  .showcase p { color: var(--muted); margin: 0 0 12px; font-size: 18px; }
+  .showcase ul { color: var(--muted); padding-left: 20px; margin: 0; }
+  .showcase li { margin: 6px 0; }
+  .shot { border-radius: 16px; box-shadow: var(--shadow); }
+
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; counter-reset: s; }
+  .step { position: relative; padding: 26px 26px 26px 76px; background: var(--card); border: 1px solid var(--line); border-radius: 20px; }
+  .step::before { counter-increment: s; content: counter(s); position: absolute; left: 24px; top: 24px; width: 36px; height: 36px;
+                  border-radius: 50%; display: grid; place-items: center; font-weight: 700; color: #fff;
+                  background: linear-gradient(180deg, var(--accent), var(--accent2)); }
+  .step h3 { margin: 4px 0 6px; font-size: 18px; }
+  .step p { margin: 0; color: var(--muted); font-size: 16px; }
+
+  .faq { max-width: 780px; margin: 0 auto; }
+  details { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 18px 22px; margin-bottom: 12px; }
+  summary { cursor: pointer; font-weight: 600; list-style: none; display: flex; justify-content: space-between; gap: 12px; }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: "+"; color: var(--muted); font-weight: 400; font-size: 22px; line-height: 1; transition: transform .25s; }
+  details[open] summary::after { transform: rotate(45deg); }
+  details p { color: var(--muted); margin: 12px 0 0; }
+
+  .final { text-align: center; }
+  .final .btn { margin-top: 8px; }
+  footer { padding: 40px 0 60px; color: var(--muted); font-size: 14px; text-align: center; border-top: 1px solid var(--line); }
+  footer a { color: var(--muted); text-decoration: underline; }
+
+  /* reveal on scroll */
+  .reveal { opacity: 0; transform: translateY(24px); transition: opacity .8s ease, transform .8s cubic-bezier(.2,.8,.2,1); }
+  .reveal.in { opacity: 1; transform: none; }
+  @media (prefers-reduced-motion: reduce) {
+    .reveal { opacity: 1; transform: none; transition: none; }
+    .hero .icon { animation: none; }
+  }
+
+  @media (max-width: 900px) {
+    .hero .wrap, .showcase { grid-template-columns: 1fr; }
+    .showcase.flip .text { order: 0; }
+    .grid, .steps { grid-template-columns: 1fr; }
+    nav .links a:not(.keep) { display: none; }
+    header.hero { padding-top: 48px; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#"><img src="icon.png" alt="">Laugh Clipper</a>
+    <div class="links">
+      <a href="#features">Features</a>
+      <a href="#how">How it works</a>
+      <a href="#faq">FAQ</a>
+      <a class="keep" href="https://github.com/Bryson-he/laugh-clipper">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <div>
+      <img class="icon" src="icon.png" alt="Laugh Clipper icon">
+      <h1>Never miss the <span>funniest moment</span> again.</h1>
+      <p class="lead">Laugh Clipper listens for laughter, cheering and screams while you play, and saves a Medal clip for
+        you — or asks first.</p>
+      <div class="ctas">
+        <a class="btn primary download" href="https://github.com/Bryson-he/laugh-clipper/releases/latest">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+               stroke-linejoin="round"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14"/></svg>
+          <span class="label">Download for Windows</span></a>
+        <a class="btn ghost" href="https://github.com/Bryson-he/laugh-clipper">View on GitHub</a>
+      </div>
+      <div class="meta"><span class="version">Free and open source</span> · Windows 10 &amp; 11 · Works with Medal</div>
+    </div>
+    <img class="demo" src="images/popup-clip.webp" alt="A 'Laughter detected' popup springs open, Clip is pressed and it turns into 'Clip saved'">
+  </div>
+</header>
+
+<section id="features">
+  <div class="wrap">
+    <h2 class="reveal">Everything a good clip needs</h2>
+    <p class="sub reveal">It runs quietly in your tray, never takes focus from your game, and only bothers you when
+      something's actually funny.</p>
+    <div class="grid">
+      <div class="card reveal"><div class="emoji">😂</div><h3>Hears more than laughs</h3>
+        <p>Laughter, cheering, shouting, screaming or gasps — each with its own level and sources.</p></div>
+      <div class="card reveal"><div class="emoji">🎮</div><h3>Only while you play</h3>
+        <p>Pauses itself when no game is in front, and adds your Steam, Epic, Xbox and Riot games automatically.</p></div>
+      <div class="card reveal"><div class="emoji">✅</div><h3>Knows it saved</h3>
+        <p>Checks Medal really made the clip, and keeps a history of every one with stats.</p></div>
+      <div class="card reveal"><div class="emoji">🗣️</div><h3>“Don’t clip”</h3>
+        <p>Changed your mind? Say it while the popup is up. Speech stays on your PC — it works offline.</p></div>
+      <div class="card reveal"><div class="emoji">🔖</div><h3>Bookmarks recordings</h3>
+        <p>Recording a whole session in Medal? Laughs drop a bookmark instead of a separate clip.</p></div>
+      <div class="card reveal"><div class="emoji">⏱️</div><h3>Longer laughs, longer clips</h3>
+        <p>Uses Medal’s 60 s or 120 s clip when the laughing goes on, so the start isn’t cut off.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="alt">
+  <div class="wrap">
+    <div class="showcase reveal">
+      <div class="text">
+        <h3>Asks first, or saves it for you</h3>
+        <p>A little capsule pops up over your game. One click (or your Medal hotkey) and it's saved. With auto-save on,
+          it waits until the laughing stops so the whole moment makes it in.</p>
+        <ul><li>Never steals focus from your game</li><li>👎 “Not funny” teaches it to be stricter</li>
+          <li>Optional chime for exclusive-fullscreen games</li></ul>
+      </div>
+      <img class="shot" src="images/popup-autosave.webp" alt="Auto-save popup counting down and saving">
+    </div>
+    <div class="showcase flip reveal">
+      <div class="text">
+        <h3>Tune it to your voice in a minute</h3>
+        <p>Live meters show how loud each source is and how much it sounds like a laugh, with a marker for your recent peak.
+          Or let <b>Calibrate</b> listen to your game and your laughs and pick the level for you.</p>
+      </div>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="images/settings-detection-dark.png">
+        <img class="shot" src="images/settings-detection-light.png" alt="Detection settings with live meters">
+      </picture>
+    </div>
+    <div class="showcase reveal">
+      <div class="text">
+        <h3>Hears your mic, game and friends separately</h3>
+        <p>Listen to your microphone and any of your PC's outputs at once. With Elgato Wave Link, every channel shows up
+          on its own — listen to the game and voice chat, ignore your music.</p>
+      </div>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="images/settings-audio-dark.png">
+        <img class="shot" src="images/settings-audio-light.png" alt="Audio settings with a meter per source">
+      </picture>
+    </div>
+    <div class="showcase flip reveal">
+      <div class="text">
+        <h3>Every clip, in one place</h3>
+        <p>History lists what was heard, where, in which game and whether it saved — with totals, your best laugh, and
+          one click to play the clip.</p>
+      </div>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="images/settings-history-dark.png">
+        <img class="shot" src="images/settings-history-light.png" alt="History page with stats">
+      </picture>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <h2 class="reveal">Up and running in a minute</h2>
+    <p class="sub reveal">A short setup guide walks you through it the first time.</p>
+    <div class="steps">
+      <div class="step reveal"><h3>Install it</h3><p>Download the installer and run it. No admin rights needed, and it
+        updates itself.</p></div>
+      <div class="step reveal"><h3>Match Medal</h3><p>It reads your clip and bookmark hotkeys straight from Medal. You
+        can also press them yourself.</p></div>
+      <div class="step reveal"><h3>Laugh once</h3><p>Laugh for a few seconds and it suggests the right trigger level for
+        your voice.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="alt" id="faq">
+  <div class="wrap">
+    <h2 class="reveal">Questions</h2>
+    <p class="sub reveal">The short answers. More in the <a href="https://github.com/Bryson-he/laugh-clipper#faq">README</a>.</p>
+    <div class="faq">
+      <details class="reveal"><summary>Is it free?</summary><p>Yes. It's free and open source under the MIT licence.</p></details>
+      <details class="reveal"><summary>Windows says “Windows protected your PC”.</summary><p>The installer isn't
+        code-signed yet. Click <b>More info → Run anyway</b>.</p></details>
+      <details class="reveal"><summary>Does it record or upload my audio?</summary><p>No. Audio is analysed on your PC a
+        second at a time and thrown away. The speech model for “don't clip” runs offline too. The only thing it connects
+        to is GitHub, to check for updates.</p></details>
+      <details class="reveal"><summary>Do I need Medal?</summary><p>Yes — Medal does the actual recording. Laugh Clipper
+        presses Medal's hotkey for you at the right moment, and warns you if Medal isn't running.</p></details>
+      <details class="reveal"><summary>The popup doesn't show over my game.</summary><p>Windows doesn't let anything
+        appear over exclusive-fullscreen games. Use borderless fullscreen, or turn on the notification sound.</p></details>
+    </div>
+  </div>
+</section>
+
+<section class="final">
+  <div class="wrap reveal">
+    <h2>Catch the next one.</h2>
+    <p class="sub">Free for Windows 10 and 11.</p>
+    <a class="btn primary download" href="https://github.com/Bryson-he/laugh-clipper/releases/latest">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+           stroke-linejoin="round"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14"/></svg>
+      <span class="label">Download for Windows</span></a>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    Made by Bryson · <a href="https://github.com/Bryson-he/laugh-clipper">Source on GitHub</a> ·
+    <a href="https://github.com/Bryson-he/laugh-clipper/blob/main/LICENSE">MIT licence</a><br>
+    Laugh Clipper isn't made by or affiliated with Medal.
+  </div>
+</footer>
+
+<script>
+  // Point the download buttons straight at the newest installer (the releases page stays as the fallback).
+  fetch("https://api.github.com/repos/Bryson-he/laugh-clipper/releases/latest")
+    .then(r => r.ok ? r.json() : Promise.reject())
+    .then(rel => {
+      const exe = (rel.assets || []).find(a => /\.exe$/i.test(a.name));
+      if (!exe) return;
+      document.querySelectorAll("a.download").forEach(a => {
+        a.href = exe.browser_download_url;
+        a.querySelector(".label").textContent = `Download ${rel.tag_name} for Windows`;
+      });
+      const v = document.querySelector(".meta .version");
+      if (v) v.textContent = `Version ${rel.tag_name.replace(/^v/, "")} · Free and open source`;
+    })
+    .catch(() => {});
+
+  // Fade sections in as they scroll into view.
+  const io = new IntersectionObserver(entries => entries.forEach(e => {
+    if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+  }), { threshold: 0.12 });
+  document.querySelectorAll(".reveal").forEach(el => io.observe(el));
+</script>
+</body>
+</html>

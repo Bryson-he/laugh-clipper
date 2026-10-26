@@ -216,6 +216,7 @@ class Engine(QObject):
         self.scores = {}     # key -> every sound's latest score, e.g. {"laughter": 0.4, "cheering": 0.1}
         self.activity = {}   # key -> last time the score was above the keep-alive level
         self.gated = False   # True while waiting for a game: keep recording, but don't classify
+        self.voice = None    # voice.VoiceCommands, fed the mic's audio while a popup is up
 
     # ----- sources -----
     def wanted(self):
@@ -314,6 +315,8 @@ class Engine(QObject):
                         mono = (block.mean(axis=1) if block.ndim > 1 else block).astype(np.float32)
                         window = np.concatenate([window[len(mono):], mono])
                         self.volume[key] = float(np.sqrt(np.mean(mono ** 2)))
+                        if kind == "mic" and self.voice is not None:
+                            self.voice.feed(mono)
                         chunks += 1
                         if chunks % per_hop:
                             continue

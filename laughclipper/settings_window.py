@@ -14,7 +14,8 @@ from .engine import SOUNDS, short_name, sound_level
 from .theme import T
 from .version import VERSION
 from .widgets import (Chip, Collapsible, Disclosure, Group, KeyCap, LevelMeter, NavItem, PopupButton,
-                      PositionPicker, Row, Segmented, Slider, StatusPill, Switch, WarningBadge, loudness)
+                      PositionPicker, Row, Segmented, Slider, StatsBar, StatusPill, Switch, WarningBadge,
+                      loudness)
 
 PAGES = [
     ("General", "", "#8e8e93"),
@@ -333,6 +334,13 @@ class SettingsWindow(QWidget):
         self.medal_row.layout().insertWidget(0, WarningBadge(), 0, Qt.AlignmentFlag.AlignVCenter)
         self.medal_row.setVisible(not self.ctrl.medal_ok)
         self.run_row = g.add(Row("Laugh detection", "", self.switch("running")))
+        self.pause_keycap = KeyCap("")
+        self.pause_keycap.clicked.connect(self.record_pause_key)
+        self.pause_clear = QPushButton("Remove")
+        self.pause_clear.setObjectName("small")
+        self.pause_clear.clicked.connect(lambda: self.ctrl.set("pause_hotkey", ""))
+        self.pause_row = g.add(Row("Pause hotkey", "", self.pause_clear, self.pause_keycap))
+        self.update_pause_row()
         g = p.section("Games")
         self.game_row = g.add(Row("Only listen while playing", "", self.switch("game_only")))
         self.fullscreen_row = g.add(Row("Count any full-screen app as a game",
@@ -492,6 +500,11 @@ class SettingsWindow(QWidget):
         self.length_warn = g.add(Row("The start of a moment could get cut off", ""))
         self.length_warn.layout().insertWidget(0, WarningBadge(), 0, Qt.AlignmentFlag.AlignVCenter)
 
+        g = p.section("Voice command", footer="Uses a small speech model on your PC, so nothing you say "
+                                              "leaves it. It only listens while a popup is showing.")
+        self.voice_row = g.add(Row("Cancel with your voice", "", self.switch("voice_cancel")))
+        self.update_voice_row()
+
         g = p.section("Clip check", footer="After the hotkey, Laugh Clipper looks for the new clip in Medal's "
                                            "folder, so the popup only says “Clip saved” when it really was.")
         g.add(Row("Check that Medal saved the clip", None, self.switch("confirm_clips")))
@@ -565,6 +578,32 @@ class SettingsWindow(QWidget):
         self.update_rec_pill()
         self.update_clip_length()
 
+    def record_pause_key(self):
+        self.pause_keycap.recording = True
+        self.pause_keycap.set_label("Press keys…")
+        self.ctrl.record_hotkey("pause_hotkey")
+
+    def update_pause_row(self):
+        hk = S["pause_hotkey"]
+        if not self.pause_keycap.recording:
+            self.pause_keycap.set_label(hotkey_label(hk) if hk else "Not set")
+        self.pause_clear.setVisible(bool(hk))
+        self.pause_row.set_sub(f"Press {hotkey_label(hk)} in a game to pause or resume listening." if hk else
+                               "Click to set a key that pauses or resumes listening, even from inside a game.")
+
+    def update_voice_row(self):
+        from . import voice
+        if not voice.available():
+            text = "The speech model isn't installed with this copy of Laugh Clipper."
+        elif not S["listen_mic"]:
+            text = "Say \u201cdon\u2019t clip\u201d while the popup is up. Turn on your microphone on the Audio " \
+                   "page first."
+        else:
+            text = ("Say \u201cdon\u2019t clip\u201d or \u201ccancel clip\u201d while the popup is up and it "
+                    "won\u2019t save.")
+        self.voice_row.set_sub(text)
+        self.voice_row.setEnabled(voice.available())
+
     def record_bookmark_key(self):
         self.bm_keycap.recording = True
         self.bm_keycap.set_label("Press keys…")
@@ -626,6 +665,9 @@ class SettingsWindow(QWidget):
         clear = QPushButton("Clear")
         clear.setObjectName("small")
         clear.clicked.connect(self.clear_history)
+        g = p.section()
+        self.stats_bar = StatsBar()
+        g.add(self.stats_bar)
         self.history_group = p.section("Recent clips", header_widget=clear,
                                        footer="Clips that Laugh Clipper saved for you, newest first. Clearing the "
                                               "list doesn't delete any clips from Medal.")
@@ -663,6 +705,14 @@ class SettingsWindow(QWidget):
             self.ctrl.clear_history()
 
     def build_history(self):
+        st = clips.stats(self.ctrl.history)
+        self.stats_bar.set_items([
+            (str(st["clips"]), "Clips saved"),
+            (str(st["week"]), "This week"),
+            (st["top_game"] or "–", "Most clipped game"),
+            (f"{st['best']:.2f}" if st["best"] else "–", "Best laugh score"),
+            (str(st["not_funny"]), "Not funny"),
+        ])
         g = self.history_group
         g.clear()
         items = list(reversed(self.ctrl.history))[:100]
@@ -674,14 +724,21 @@ class SettingsWindow(QWidget):
             score = it.get("score") or 0
             sub = "  ·  ".join(x for x in (when(it["time"]), it.get("source", ""),
                                            f"{it['length']} s clip" if it.get("length") else "",
-                                           f"score {score:.2f}" if score else "", "auto-saved" if it.get("auto") else "")
+                                           f"score {score:.2f}" if score else "",
+                                           "auto-saved" if it.get("auto") else "")
                                if x)
             status = it.get("status")
             pill = {"saved": StatusPill("Saved", "green"), "failed": StatusPill("Didn't save", "orange"),
-                    "bookmarked": StatusPill("Bookmarked", "accent")}.get(status, StatusPill("Not checked",
-                                                                                              "secondary"))
+                    "bookmarked": StatusPill("Bookmarked", "accent"),
+                    "not_funny": StatusPill("Not funny", "secondary")}.get(status, StatusPill("Not checked",
+                                                                                           "secondary"))
             right = [pill]
             if status == "saved" and it.get("file") and Path(it["file"]).exists():
+                play = QPushButton("Play")
+                play.setObjectName("small")
+                play.setToolTip("Open the clip in your video player")
+                play.clicked.connect(lambda _=False, f=it["file"]: winutil.open_file(f))
+                right.append(play)
                 show = QPushButton("Show")
                 show.setObjectName("small")
                 show.setToolTip(it["file"])
@@ -953,6 +1010,11 @@ class SettingsWindow(QWidget):
             self.keycap.recording = False
             self.keycap.set_label(hotkey_label())
             self.update_medal_keys()
+        if key == "pause_hotkey":
+            self.pause_keycap.recording = False
+            self.update_pause_row()
+        if key in ("listen_mic", "voice_cancel"):
+            self.update_voice_row()
         if key in ("bookmark_hotkey", "bookmark_when_recording"):
             self.bm_keycap.recording = False
             self.update_medal_keys()

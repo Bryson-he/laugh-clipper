@@ -3,3 +3,4 @@ mediapipe
 soundcard
 keyboard
 numpy
+vosk

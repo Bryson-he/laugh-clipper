@@ -85,6 +85,9 @@ class FakeToast:
     def set_bookmarked(self):
         self.mode = "bookmarked"
 
+    def set_info(self, icon, title, subtitle):
+        self.mode, self.info = "info", (icon, title, subtitle)
+
     def set_nomedal(self, seconds):
         self.mode = "nomedal"
 
@@ -105,6 +108,7 @@ def ctrl(qapp, pc, monkeypatch, tmp_path):
     def show_toast(self, mode, label, sound="laughter", test=False):
         self.toasts.append((mode, sound))
         self.toast, self.toast_is_test = FakeToast(mode), test
+        self.after_show(mode)
     monkeypatch.setattr(appmod.Controller, "show_toast", show_toast)
     (tmp_path / "Clips").mkdir()
     c = appmod.Controller(qapp)

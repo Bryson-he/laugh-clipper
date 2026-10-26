@@ -96,7 +96,6 @@ def test_test_popup_isnt_logged(ctrl):
 
 
 def test_history_is_kept_short_and_survives_restart(ctrl, qapp):
-    from laughclipper import app as appmod
     ctrl.history = [clips.new_entry({}, "saved", "x.mp4") for _ in range(clips.HISTORY_MAX)]
     S["confirm_clips"] = False
     ctrl.on_laugh(VOICE, "gasp")

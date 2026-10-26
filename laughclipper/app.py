@@ -14,9 +14,9 @@ from PySide6.QtGui import QColor, QGuiApplication, QIcon, QImage, QPainter, QPix
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
-from . import clips, config, medal, sounds, winutil
+from . import clips, config, medal, sounds, voice, winutil
 from .config import S, hotkey_label
-from .engine import Engine, short_name
+from .engine import SOUNDS, Engine, short_name, sound_level
 from .theme import T
 from .toast import Toast
 from .updater import Updater
@@ -115,7 +115,8 @@ class Controller(QObject):
     update_changed = Signal(str, dict)
     history_changed = Signal()
     _hotkey_hit = Signal()
-    _hotkey_recorded = Signal(str, str)     # which hotkey ("hotkey" / "bookmark_hotkey"), keys
+    _hotkey_recorded = Signal(str, str)     # which hotkey ("hotkey" / "bookmark_hotkey" / "pause_hotkey"), keys
+    _pause_hit = Signal()
 
     def __init__(self, app):
         super().__init__()
@@ -136,7 +137,7 @@ class Controller(QObject):
         self.toast_is_test = False
         self.pending = None
         self.last_prompt = 0.0
-        self.hotkey_handle = None
+        self.hotkey_handles = {}       # "clip" / "pause" -> keyboard hotkey handle
         self.badges = []
         self.tray_icons = {}         # state -> tray icon, made once
         self.notified_version = None
@@ -153,6 +154,12 @@ class Controller(QObject):
         self.watcher.missing.connect(self.on_clip_missing)
 
         self._hotkey_hit.connect(self.on_hotkey_pressed)
+        self._pause_hit.connect(self.toggle_pause)
+        self.voice = voice.VoiceCommands()
+        self.voice.cancel.connect(self.on_voice_cancel)
+        self.engine.voice = self.voice
+        if S["voice_cancel"]:
+            self.voice.load()
         self._hotkey_recorded.connect(self.apply_recorded)
         self.save_timer = QTimer(self)
         self.save_timer.setSingleShot(True)
@@ -202,6 +209,8 @@ class Controller(QObject):
             self.check_game()
         if key == "medal_check":
             self.check_medal()
+        if key == "voice_cancel" and value:
+            self.voice.load()
 
     # ----- Medal -----
     def check_medal(self):
@@ -317,32 +326,38 @@ class Controller(QObject):
             b.show()
 
     # ----- hotkey -----
+    def unregister_hotkeys(self):
+        try:
+            import keyboard
+        except Exception:
+            return
+        for handle in self.hotkey_handles.values():
+            try:
+                keyboard.remove_hotkey(handle)
+            except Exception:
+                pass
+        self.hotkey_handles = {}
+
     def register_hotkey(self):
+        """Listen for Medal's clip hotkey (to notice you pressing it) and our pause hotkey, if set."""
         try:
             import keyboard
         except Exception as e:
             log.warning("Hotkeys unavailable: %s", e)
             return
-        if self.hotkey_handle is not None:
+        self.unregister_hotkeys()
+        for name, hk, hit in (("clip", S["hotkey"], self._hotkey_hit), ("pause", S["pause_hotkey"], self._pause_hit)):
+            if not hk:
+                continue
             try:
-                keyboard.remove_hotkey(self.hotkey_handle)
-            except Exception:
-                pass
-            self.hotkey_handle = None
-        try:
-            self.hotkey_handle = keyboard.add_hotkey(S["hotkey"], self._hotkey_hit.emit)
-        except Exception as e:
-            log.warning("Couldn't register hotkey %s: %s", S["hotkey"], e)
+                self.hotkey_handles[name] = keyboard.add_hotkey(hk, hit.emit)
+            except Exception as e:
+                log.warning("Couldn't register hotkey %s: %s", hk, e)
 
     def record_hotkey(self, setting="hotkey"):
         """Wait for the next key combination and save it as the clip hotkey, or as `setting`."""
         import keyboard
-        if self.hotkey_handle is not None:
-            try:
-                keyboard.remove_hotkey(self.hotkey_handle)
-            except Exception:
-                pass
-            self.hotkey_handle = None
+        self.unregister_hotkeys()
 
         def worker():
             try:
@@ -355,10 +370,20 @@ class Controller(QObject):
     def apply_recorded(self, setting, hk):
         if setting == "hotkey":
             self.apply_hotkey(hk)
-        else:
-            self.register_hotkey()          # recording took our clip hotkey away; put it back
-            S[setting] = ""                 # so the change below always fires, even for the same keys
-            self.set(setting, hk)
+            return
+        if setting == "pause_hotkey" and hk == S["hotkey"]:
+            log.warning("Pause hotkey can't be the same as the clip hotkey (%s)", hk)
+            hk = S["pause_hotkey"]          # keep the old one
+        S[setting] = ""                     # so the change below always fires, even for the same keys
+        self.set(setting, hk)
+        self.register_hotkey()              # recording took our hotkeys away; put them back
+
+    def toggle_pause(self):
+        """The pause hotkey: pause or resume detection, with a little popup saying which."""
+        self.set("running", not S["running"])
+        on = S["running"]
+        self.show_info("play" if on else "pause", "Detection on" if on else "Detection paused",
+                       "Listening for laughs again" if on else f"Press {hotkey_label(S['pause_hotkey'])} to resume")
 
     def apply_hotkey(self, hk):
         S["hotkey"] = hk
@@ -427,6 +452,7 @@ class Controller(QObject):
             self.clip()
 
     def clip(self):
+        self.voice.stop()
         self.pending = None
         self.last_prompt = time.time()
         if not self.check_medal():
@@ -523,6 +549,7 @@ class Controller(QObject):
         self.history_changed.emit()
 
     def cancel_pending(self):
+        self.voice.stop()
         if not self.pending:
             return
         self.pending = None
@@ -542,11 +569,18 @@ class Controller(QObject):
         t = Toast(self.screen_for(S["monitor"]), S["position"], mode, label, sound, hotkey_label(), seconds)
         t.bookmark = not test and self.will_bookmark()
         t.clip_requested.connect(self.clip)
+        t.not_funny.connect(self.on_not_funny)
         t.close_requested.connect(self.on_toast_close)
         t.finished.connect(lambda t=t: self.on_toast_done(t))
         self.toast, self.toast_is_test = t, test
         t.show()
-        if S["sound_cue"]:
+        self.after_show(mode)
+
+    def after_show(self, mode):
+        """A popup just appeared: listen for "don't clip" while it's up, and play the sound if that's on."""
+        if mode in ("ask", "pending") and S["voice_cancel"]:
+            self.voice.start()
+        if mode != "info" and S["sound_cue"]:
             sounds.play_chime(S["sound_volume"], S["sound_device"], S["sound_name"])
 
     def on_toast_close(self):
@@ -559,6 +593,40 @@ class Controller(QObject):
         if self.toast is t:
             self.toast = None
             self.toast_is_test = False
+            self.voice.stop()
+
+    def show_info(self, icon, title, sub):
+        """A short popup that says something and goes away by itself (paused, cancelled…)."""
+        if self.toast is not None and self.toast.mode in ("ask", "pending", "saving"):
+            self.toast.set_info(icon, title, sub)          # turn the current popup into it
+            return
+        self.show_toast("info", "", test=True)
+        self.toast.set_info(icon, title, sub)
+
+    def on_voice_cancel(self, text):
+        """Someone said "don't clip" while the popup was up."""
+        if not self.toast or self.toast.mode not in ("ask", "pending"):
+            return
+        self.pending = None
+        self.last_prompt = time.time()
+        self.moment = None
+        log.info('clip cancelled by voice ("%s")', text)
+        self.toast.set_info("cancel", "Cancelled", f'You said “{text}”')
+
+    def on_not_funny(self):
+        """The 👎 on the popup: skip this one, and be a little stricter with that sound from now on."""
+        if not self.toast or self.toast.mode not in ("ask", "pending") or not self.moment:
+            return
+        self.voice.stop()
+        self.pending = None
+        self.last_prompt = time.time()
+        sound = self.moment["sound"]
+        old = sound_level(sound)
+        new = round(min(0.9, max(old * 1.1, old + 0.02)), 2)
+        self.set("sound_levels", {**S["sound_levels"], sound: new})
+        log.info("not funny: %s level %.2f -> %.2f", sound, old, new)
+        self.record("not_funny")
+        self.toast.set_info("thumb", "Got it", f"{SOUNDS[sound][0]} level raised to {new:.2f}")
 
     def test_toast(self):
         self.pending = None
@@ -640,60 +708,49 @@ class Controller(QObject):
         if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
             self.show_window()
 
-    def show_setup(self):
-        """The setup guide (shown on first run, or from 'Run Setup Again' on the General page)."""
-        if self.setup is None:
-            from .setup_guide import SetupGuide
-            self.setup = SetupGuide(self)
-            self.setup.done.connect(self.on_setup_done)
-        self.setup.show()
-        self.setup.raise_()
-        self.setup.activateWindow()
-
-    def show_calibration(self):
-        """Calibrate the trigger level for the game being played (from the Detection page)."""
-        if self.calibration is None:
-            from .calibrate import CalibrationWindow
-            self.calibration = CalibrationWindow(self)
-            self.calibration.done.connect(self.on_calibration_done)
-        self.calibration.show()
-        self.calibration.raise_()
-        self.calibration.activateWindow()
-
-    def show_whats_new(self):
-        """The release notes for this version (after an update, or from the General page)."""
-        if self.whats_new is None:
-            from .whatsnew import WhatsNewWindow
-            self.whats_new = WhatsNewWindow(self, VERSION)
-            self.whats_new.done.connect(self.on_whats_new_done)
-        self.whats_new.show()
-        self.whats_new.raise_()
-        self.whats_new.activateWindow()
-
-    def on_whats_new_done(self):
-        self.whats_new.deleteLater()
-        self.whats_new = None
-
-    def on_calibration_done(self):
-        self.calibration.deleteLater()
-        self.calibration = None
-
-    def on_setup_done(self):
-        self.setup.deleteLater()
-        self.setup = None
-        if not (self.window and self.window.isVisible()):
-            self.tray.showMessage("Laugh Clipper is running", "It's in the system tray. Click the icon to open "
-                                  "the settings.", self.icon, 5000)
-
-    def show_window(self):
-        if self.window is None:
-            from .settings_window import SettingsWindow
-            self.window = SettingsWindow(self)
-        w = self.window
+    def open_window(self, attr, make, on_done=None):
+        """Show one of our windows, creating it the first time. Windows with a `done` signal (setup guide,
+        calibration, What's new) are thrown away when closed; `on_done` runs after that."""
+        w = getattr(self, attr)
+        if w is None:
+            w = make()
+            setattr(self, attr, w)
+            if hasattr(w, "done"):
+                w.done.connect(lambda: self.window_closed(attr, on_done))
         w.setWindowState(w.windowState() & ~Qt.WindowState.WindowMinimized)
         w.show()
         w.raise_()
         w.activateWindow()
+
+    def window_closed(self, attr, on_done=None):
+        getattr(self, attr).deleteLater()
+        setattr(self, attr, None)
+        if on_done:
+            on_done()
+
+    def show_window(self):
+        from .settings_window import SettingsWindow
+        self.open_window("window", lambda: SettingsWindow(self))
+
+    def show_setup(self):
+        """The setup guide (shown on first run, or from 'Run Setup Again' on the General page)."""
+        from .setup_guide import SetupGuide
+        self.open_window("setup", lambda: SetupGuide(self), self.on_setup_done)
+
+    def show_calibration(self):
+        """Calibrate the trigger level for the game being played (from the Detection page)."""
+        from .calibrate import CalibrationWindow
+        self.open_window("calibration", lambda: CalibrationWindow(self))
+
+    def show_whats_new(self):
+        """The release notes for this version (after an update, or from the General page)."""
+        from .whatsnew import WhatsNewWindow
+        self.open_window("whats_new", lambda: WhatsNewWindow(self, VERSION))
+
+    def on_setup_done(self):
+        if not (self.window and self.window.isVisible()):
+            self.tray.showMessage("Laugh Clipper is running", "It's in the system tray. Click the icon to open "
+                                  "the settings.", self.icon, 5000)
 
     def quit(self):
         self.engine.stop_all()

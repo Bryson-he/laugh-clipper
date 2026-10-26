@@ -38,6 +38,8 @@ DEFAULTS = {
     "clips_folder": "",        # Medal's clips folder; "" = find it (X:\Medal\Clips)
     "bookmark_when_recording": False,  # while Medal is recording, press its bookmark key instead of clipping
     "bookmark_hotkey": "",     # Medal's bookmark hotkey; "" = read it from Medal's settings
+    "voice_cancel": False,     # saying "don't clip" while the popup is up cancels it (needs the mic)
+    "pause_hotkey": "",        # a key to pause/resume detection; "" = none
     "smart_length": False,     # pick the Medal clip hotkey (30/60/120 s…) whose length fits the moment
     "long_laugh": 8,           # smart length: each this-many seconds of laughing moves up one clip length
     # sound cue
@@ -103,7 +105,7 @@ def load():
         S["sound_sources"] = {k: [s for s in v if isinstance(s, str)] for k, v in sources.items()
                               if k in SOUNDS and isinstance(v, list) and any(isinstance(s, str) for s in v)}
         S["games"] = clean_games(S["games"])
-        for key in ("clips_folder", "bookmark_hotkey", "sound_device", "last_seen_version"):
+        for key in ("clips_folder", "bookmark_hotkey", "sound_device", "last_seen_version", "pause_hotkey"):
             if not isinstance(S[key], str):
                 S[key] = ""
         if not isinstance(S["sound_volume"], (int, float)) or isinstance(S["sound_volume"], bool):
@@ -155,6 +157,12 @@ def split_position(pos):
     return v, h or "center"
 
 
+KEY_LABELS = {"ctrl": "Ctrl", "alt": "Alt", "shift": "Shift", "windows": "Win", "win": "Win", "esc": "Esc",
+              "space": "Space", "enter": "Enter", "tab": "Tab"}
+
+
 def hotkey_label(hk=None):
+    """'ctrl+alt+p' -> 'Ctrl + Alt + P', 'shift+f7' -> 'Shift + F7'."""
     hk = hk or S["hotkey"]
-    return " + ".join(p.upper() if len(p) <= 3 else p.capitalize() for p in hk.split("+"))
+    parts = [p.strip() for p in hk.split("+") if p.strip()]
+    return " + ".join(KEY_LABELS.get(p.lower(), p.upper() if len(p) <= 3 else p.capitalize()) for p in parts)

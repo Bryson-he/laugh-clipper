@@ -225,6 +225,12 @@ def process_running(exe):
         _kernel32.CloseHandle(snap)
 
 
+def open_file(path):
+    """Open a file with its default app (a clip in the video player)."""
+    if IS_WIN:
+        os.startfile(os.path.normpath(path))
+
+
 def reveal(path):
     """Open Explorer with the file selected."""
     if IS_WIN:

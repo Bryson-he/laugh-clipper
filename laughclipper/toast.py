@@ -14,8 +14,9 @@ from .theme import T
 from .widgets import Spring, clamp
 
 M = 34                      # transparent margin around the capsule for the shadow
-W_FULL, H_FULL = 400, 76
+W_FULL, H_FULL = 440, 76
 W_SAVED, H_SAVED = 236, 60
+W_INFO = 310                # short messages: paused, cancelled, got it
 SEED = 40                   # size it grows from / shrinks back to
 EDGE_GAP = 18               # distance from the screen edge
 
@@ -31,6 +32,7 @@ def ease_out(t):
 
 class Toast(QWidget):
     clip_requested = Signal()
+    not_funny = Signal()
     close_requested = Signal()
     finished = Signal()
 
@@ -52,10 +54,11 @@ class Toast(QWidget):
         self.surprised = sound in SURPRISED
         self.total = self.left = max(float(seconds), 0.1)
         self.laughing = False
-        self.hover = self.hover_ring = self.closing = False
+        self.hover = self.hover_ring = self.hover_nf = self.closing = False
         self.t = 0.0
         self.close_at = self.end_at = None
-        self.pill = self.ring_rect = self.btn_rect = QRectF()
+        self.pill = self.ring_rect = self.btn_rect = self.nf_rect = QRectF()
+        self.info = ("cancel", "", "")       # info mode: (icon, title, subtitle)
 
         # placement
         self.av, self.ah = split_position(position)
@@ -80,12 +83,13 @@ class Toast(QWidget):
         self.press = Spring(0.0, 0.18, 1.0)
         self.check = Spring(0.0, 0.5, 0.86)
         self.wave = Spring(0.0, 0.15, 1.0)
-        self.springs = [self.w, self.h, self.alpha, self.slide, self.swap, self.scale, self.press, self.check, self.wave]
+        self.springs = [self.w, self.h, self.alpha, self.slide, self.swap, self.scale, self.press, self.check,
+                        self.wave]
 
         tw, th = self.size_for(mode)
         self.w.target, self.h.target = tw, th
         self.alpha.target, self.slide.target = 1.0, 0.0
-        if mode == "saved":
+        if mode in ("saved", "info"):
             self.check.target = 1.0
             self.close_at = 1.6
 
@@ -99,6 +103,8 @@ class Toast(QWidget):
 
     @staticmethod
     def size_for(mode):
+        if mode == "info":
+            return W_INFO, H_SAVED
         return (W_SAVED, H_SAVED) if mode in ("saved", "saving", "bookmarked") else (W_FULL, H_FULL)
 
     def showEvent(self, e):
@@ -141,6 +147,17 @@ class Toast(QWidget):
         self.check.snap(0.0)
         self.check.target = 1.0
         self.close_at = self.t + 1.5
+
+    def set_info(self, icon, title, subtitle, seconds=1.8):
+        """A short message that goes away by itself. icon: "cancel", "thumb", "pause" or "play"."""
+        if self.closing:
+            return
+        self.info = (icon, title, subtitle)
+        if self.mode != "info":
+            self._switch("info")
+        self.check.snap(0.0)
+        self.check.target = 1.0
+        self.close_at = self.t + seconds
 
     def set_failed(self, seconds):
         """Medal didn't make a clip file."""
@@ -201,6 +218,9 @@ class Toast(QWidget):
     def _over(self, pos):
         return self.pill.contains(pos)
 
+    def _on_nf(self, pos):
+        return self.mode in ("ask", "pending") and self.nf_rect.adjusted(-4, -4, 4, 4).contains(pos)
+
     def _on_ring(self, pos):
         return (self.mode in ("ask", "pending", "nomedal", "failed")
                 and self.ring_rect.adjusted(-6, -6, 6, 6).contains(pos))
@@ -213,11 +233,12 @@ class Toast(QWidget):
             self.hover = over
             self.scale.target = 1.025 if over and can_clip else 1.0
         self.hover_ring = self._on_ring(pos)
+        self.hover_nf = self._on_nf(pos)
         clickable = over and (can_clip or self.hover_ring)
         self.setCursor(Qt.CursorShape.PointingHandCursor if clickable else Qt.CursorShape.ArrowCursor)
 
     def leaveEvent(self, e):
-        self.hover = self.hover_ring = False
+        self.hover = self.hover_ring = self.hover_nf = False
         self.scale.target = 1.0
         self.press.target = 0.0
 
@@ -228,6 +249,9 @@ class Toast(QWidget):
         if self._on_ring(pos):
             self.close_requested.emit()
             return
+        if self._on_nf(pos):
+            self.not_funny.emit()
+            return
         if self.mode in ("ask", "pending"):
             self.press.target = 1.0
 
@@ -235,7 +259,8 @@ class Toast(QWidget):
         if self.press.target > 0:
             self.press.target = 0.0
             pos = e.position()
-            if self._over(pos) and not self._on_ring(pos) and self.mode in ("ask", "pending"):
+            if (self._over(pos) and not self._on_ring(pos) and not self._on_nf(pos)
+                    and self.mode in ("ask", "pending")):
                 self.clip_requested.emit()
 
     # ----- painting -----
@@ -292,12 +317,18 @@ class Toast(QWidget):
         W, H = self.size_for(mode)
         rr = QRectF(center.x() - W / 2, center.y() - H / 2, W, H)
         cy = rr.center().y()
-        icon = 34 if mode in ("saved", "saving", "bookmarked") else 44
+        icon = 34 if mode in ("saved", "saving", "bookmarked", "info") else 44
         pad = (H - icon) / 2
         ic = QRectF(rr.left() + pad, cy - icon / 2, icon, icon)
         tx = ic.right() + 12
 
-        if mode == "bookmarked":
+        if mode == "info":
+            kind, title, subtitle = self.info
+            pop = 0.82 + 0.18 * clamp(self.check.value * 1.4)
+            d = icon * pop
+            draw_info_icon(p, QRectF(ic.center().x() - d / 2, ic.center().y() - d / 2, d, d), kind)
+            self.draw_texts(p, tx, cy, rr.right() - pad - tx, title, subtitle, None)
+        elif mode == "bookmarked":
             pop = 0.82 + 0.18 * clamp(self.check.value * 1.4)
             d = icon * pop
             draw_bookmark_icon(p, QRectF(ic.center().x() - d / 2, ic.center().y() - d / 2, d, d), self.check.value)
@@ -327,8 +358,9 @@ class Toast(QWidget):
             ring_d = 30
             ring = QRectF(rr.right() - 22 - ring_d, cy - ring_d / 2, ring_d, ring_d)
             btn = QRectF(ring.left() - 10 - 64, cy - 17, 64, 34)
+            nf = QRectF(btn.left() - 8 - 30, cy - 15, 30, 30)
             if live:
-                self.ring_rect, self.btn_rect = ring, btn
+                self.ring_rect, self.btn_rect, self.nf_rect = ring, btn, nf
             if mode == "ask":
                 title = f"{self.sound_name} detected"
                 sub = f"{self.source}  ·  " + ("Medal is recording" if self.bookmark else f"{self.hotkey} to clip")
@@ -340,16 +372,20 @@ class Toast(QWidget):
                 title = "Bookmarking" if self.bookmark else "Saving clip"
                 sub = f"In {max(0, math.ceil(self.left))}s  ·  {self.source}"
                 frac = self.left / self.total
-            title_w = self.draw_texts(p, tx, cy, btn.left() - 12 - tx, title, sub, None)
+            if self.hover_nf:
+                sub = "Not funny? Skip it, be stricter"
+            title_w = self.draw_texts(p, tx, cy, nf.left() - 12 - tx, title, sub, None)
+            draw_not_funny(p, nf, self.hover_nf)
             if mode == "pending" and self.wave.value > 0.02:
                 self.draw_wave(p, tx + title_w + 9, cy - 9)
             # button
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(BLUE_HOVER if (self.hover and not self.hover_ring) else BLUE)
+            p.setBrush(BLUE_HOVER if (self.hover and not self.hover_ring and not self.hover_nf) else BLUE)
             p.drawRoundedRect(btn, 17, 17)
             p.setPen(QColor("white"))
             p.setFont(T.font(14, 600, display=True))
-            p.drawText(btn, Qt.AlignmentFlag.AlignCenter, "Now" if mode == "pending" else "Mark" if self.bookmark else "Clip")
+            label = "Now" if mode == "pending" else "Mark" if self.bookmark else "Clip"
+            p.drawText(btn, Qt.AlignmentFlag.AlignCenter, label)
             draw_ring(p, ring, clamp(frac), self.hover_ring)
         p.restore()
 
@@ -464,6 +500,41 @@ def draw_bookmark_icon(p, r, prog):
     p.setBrush(QColor("white"))
     p.drawPath(ribbon)
     p.restore()
+
+
+def _glyph(p, r, glyph, fallback, size, color):
+    """Draw a Segoe Fluent/MDL2 icon glyph if the font is there, else a plain text fallback."""
+    f = T.font(size, 600)
+    if T.glyphs:
+        f.setFamily(T.glyphs)
+    p.setFont(f)
+    p.setPen(color)
+    p.drawText(r, Qt.AlignmentFlag.AlignCenter, glyph if T.glyphs else fallback)
+
+
+def draw_not_funny(p, r, hover):
+    """The little thumbs-down button on the ask / auto-save popup."""
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(255, 255, 255, 46 if hover else 22))
+    p.drawEllipse(r)
+    _glyph(p, r, "\uE8E0", "\u2212", r.height() * 0.45, QColor(255, 255, 255, 235 if hover else 170))
+
+
+def draw_info_icon(p, r, kind):
+    """Round icon for the short info popups."""
+    top, bottom, glyph, fallback = {
+        "cancel": ("#a1a1a6", "#6e6e73", "\uE711", "\u2715"),     # Cancel
+        "thumb": ("#ffb340", "#ff8a00", "\uE8E0", "\u2212"),      # Dislike
+        "pause": ("#a1a1a6", "#6e6e73", "\uE769", "II"),            # Pause
+        "play": ("#3ddc6a", "#22a447", "\uE768", "\u25B6"),        # Play
+    }.get(kind, ("#a1a1a6", "#6e6e73", "\uE946", "i"))
+    g = QLinearGradient(r.topLeft(), r.bottomLeft())
+    g.setColorAt(0, QColor(top))
+    g.setColorAt(1, QColor(bottom))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(g)
+    p.drawEllipse(r)
+    _glyph(p, r, glyph, fallback, r.height() * 0.42, QColor("white"))
 
 
 def draw_spinner(p, r, t):

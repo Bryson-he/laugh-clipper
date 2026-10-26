@@ -43,7 +43,7 @@ from laughclipper import app as appmod, config, medal, settings_window, theme, t
 from laughclipper.config import S  # noqa: E402
 from laughclipper.theme import T  # noqa: E402
 
-VERSION = "1.5.0"
+VERSION = "2.0.0"
 MICS = ["Wave:3 Mic (Elgato Wave:3)", "Headset Microphone (Arctis Nova Pro Wireless)"]
 SPEAKERS = ["Game (Elgato Virtual Audio)", "Voice Chat (Elgato Virtual Audio)", "Browser (Elgato Virtual Audio)",
             "Music (Elgato Virtual Audio)", "System (Elgato Virtual Audio)"]
@@ -61,7 +61,8 @@ toastmod.Toast.showEvent = lambda self, e: None
 config.load()
 S.update({
     "listen_mic": True, "mic_device": "", "outputs": SPEAKERS[:2], "monitor": 1, "position": "bottom-center",
-    "hotkey": "shift+f7", "bookmark_when_recording": True, "sound_cue": True,
+    "hotkey": "shift+f7", "bookmark_when_recording": True, "sound_cue": True, "voice_cancel": True,
+    "pause_hotkey": "ctrl+alt+p", "smart_length": True,
     "sound_device": SPEAKERS[0], "auto_clip": True, "clip_delay": 8, "max_wait": 30, "triggers": ["laughter", "cheering"],
     "threshold": 0.3, "min_laugh": 1.0, "pause_tolerance": 1.5, "game_only": True,
     "games": [{"exe": "rocketleague.exe", "name": "Rocket League"}, {"exe": "valorant.exe", "name": "VALORANT"},
@@ -92,8 +93,10 @@ CLIPS.mkdir(parents=True)
 now = datetime.now().replace(second=0)
 ctrl.history = []
 for minutes, sound, source, game, score, auto, status in [
+        (5 * 1440, "laughter", "Voice Chat", "Rocket League", 0.58, True, "saved"),
         (2 * 1440 + 200, "laughter", "Your mic", "Minecraft", 0.44, False, "saved"),
         (1440 + 65, "screaming", "Game", "", 0.38, True, "failed"),
+        (1440 + 20, "shouting", "Game", "Rocket League", 0.35, True, "not_funny"),
         (52, "cheering", "Voice Chat", "Rocket League", 0.71, True, "saved"),
         (3, "laughter", "Voice Chat", "Rocket League", 0.62, True, "saved")]:
     f = CLIPS / f"clip{minutes}.mp4"
@@ -313,7 +316,8 @@ def popup_autosave():
 def popup_gallery():
     """Still frames of the different popups, stacked on one card."""
     items = [("ask", "Game", "cheering"), ("ask", "Your mic", "screaming"), ("pending", "Voice Chat", "laughter"),
-             ("saved", "Game", "laughter"), ("bookmarked", "Game", "laughter"), ("nomedal", "Game", "laughter")]
+             ("saved", "Game", "laughter"), ("bookmarked", "Game", "laughter"), ("cancelled", "Game", "laughter"),
+             ("nomedal", "Game", "laughter")]
     gap, top = 84, 18
     h = top * 2 + gap * (len(items) - 1) + 76 + 36
     img = canvas(CARD_W, h)
@@ -324,6 +328,11 @@ def popup_gallery():
         t = make_toast(mode, source, sound, 8)
         if mode in ("saved", "bookmarked"):
             t.saved_sub = "In Medal  ·  Rocket League"
+            t.check.snap(1.0)
+            t.close_at = None
+        if mode == "cancelled":
+            t = make_toast("info", source, sound, 8)
+            t.info = ("cancel", "Cancelled", "You said \u201cdon\u2019t clip\u201d")
             t.check.snap(1.0)
             t.close_at = None
         if mode == "pending":

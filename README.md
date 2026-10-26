@@ -14,7 +14,7 @@ and saves a [Medal](https://medal.tv) clip for you, or asks first.
 ![Windows 10 and 11](https://img.shields.io/badge/Windows-10%20%7C%2011-5e5ce6?style=flat-square)
 [![MIT license](https://img.shields.io/github/license/Bryson-he/laugh-clipper?style=flat-square&color=8e8e93)](LICENSE)
 
-### [⬇&nbsp; Download for Windows](https://github.com/Bryson-he/laugh-clipper/releases/latest)
+### [⬇&nbsp; Download for Windows](https://github.com/Bryson-he/laugh-clipper/releases/latest) &nbsp;·&nbsp; [Website](https://bryson-he.github.io/laugh-clipper/)
 
 <img src="docs/images/hero.png" width="820" alt="The Laugh Clipper settings window with a 'Laughter detected' popup">
 
@@ -42,6 +42,8 @@ audio or voice chat. When it hears someone properly laughing, it pops up a small
 </table>
 
 The popup never steals focus from your game, and it doesn't send anything to Medal until you (or auto-save) say so.
+Changed your mind? Say **"don't clip"** and it's cancelled. Not actually funny? Press 👎 and it gets a little stricter
+about that sound.
 
 ## Features
 
@@ -103,14 +105,27 @@ them in, and it warns you if they don't match.
 </picture>
 </div>
 
+### 🗣️ Say "don't clip"
+
+Turn on **Clipping → Cancel with your voice** and, while a popup is up, just say **"don't clip"** (or "cancel clip")
+to call it off, even during an auto-save countdown. Speech recognition runs offline on your PC with
+[Vosk](https://alphacephei.com/vosk/), listens only for those few words, and only while a popup is showing.
+
+### 👎 Learns what isn't funny
+
+Each popup has a **Not funny** button. Press it and that clip is skipped, and the trigger level for that sound goes
+up a little, so the same kind of noise is less likely to set it off next time. You can always set it back on the
+Detection page.
+
 ### ✅ Knows when a clip really saved
 
 After pressing Medal's hotkey, Laugh Clipper watches Medal's clips folder and only says **Clip saved** once the new
 clip is actually there. If Medal didn't make one (say the hotkey doesn't match), it tells you instead of pretending.
 And if Medal isn't running at all, it warns you before you need it, with an **Open Medal** button.
 
-Every clip goes into the **History** page: what was heard, where, in which game, and whether it saved, with a
-button to jump straight to the file.
+Every clip goes into the **History** page: what was heard, where, in which game, and whether it saved, with
+buttons to **Play** it or show it in its folder. Stats along the top show how many clips you've saved, this week's
+count, your most clipped game and your best laugh.
 
 <div align="center">
 <picture>
@@ -132,6 +147,7 @@ button to jump straight to the file.
 - **What's new:** after each update, a short summary of what changed.
 - **Optional sound:** a soft chime (or a pop, marimba or bell) when the popup appears, on any output you choose. Handy
   in exclusive-fullscreen games where the popup can't show.
+- **Pause hotkey:** pick a key on the General page to pause and resume listening without opening anything.
 - **Tray icon shows what it's doing:** grey when paused, an orange dot when it's waiting for a game or Medal is closed.
 - **Put the popup anywhere:** any corner or edge of any monitor, and choose how long it stays up.
 - **Looks at home on Windows 11:** follows your light or dark mode, with smooth, springy animations.
@@ -147,9 +163,9 @@ button to jump straight to the file.
 | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-detection-dark.png"><img src="docs/images/settings-detection-light.png" alt="Detection settings"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-clipping-dark.png"><img src="docs/images/settings-clipping-light.png" alt="Clipping settings"></picture> |
 | **Detection:** what to listen for, and how sensitive it is | **Clipping:** your Medal hotkey and auto-save |
 | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-notification-dark.png"><img src="docs/images/settings-notification-light.png" alt="Notification settings"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-general-dark.png"><img src="docs/images/settings-general-light.png" alt="General settings"></picture> |
-| **Notification:** which monitor, where, and for how long | **General:** games, startup and updates |
+| **Notification:** which monitor, where, and for how long | **General:** games, pause hotkey, startup and updates |
 | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-audio-dark.png"><img src="docs/images/settings-audio-light.png" alt="Audio settings"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-history-dark.png"><img src="docs/images/settings-history-light.png" alt="History"></picture> |
-| **Audio:** your mic and PC audio, with live meters | **History:** every clip, and whether it saved |
+| **Audio:** your mic and PC audio, with live meters | **History:** every clip, stats, and whether it saved |
 
 </details>
 
@@ -214,6 +230,7 @@ music or browser outputs on the Audio page, and try **Only listen while playing*
 <summary><b>Does it record or upload my audio?</b></summary>
 
 No. Audio is analysed on your PC, one second at a time, and then thrown away. Nothing is recorded or sent anywhere.
+That includes "don't clip": the speech recogniser runs offline and only listens while a popup is showing.
 The only thing Laugh Clipper connects to is GitHub, to check for updates, and you can turn that off.
 </details>
 
@@ -243,8 +260,11 @@ You'll need Python 3.12 on Windows.
 ```
 py -3.12 -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python tools\fetch_model.py
 .venv\Scripts\python main.py
 ```
+
+`tools\fetch_model.py` downloads the YAMNet sound model and the small Vosk speech model into `models\`.
 
 `build_local.bat` builds `dist\LaughClipper\LaughClipper.exe` on your own PC (no installer, no auto-updates).
 
@@ -281,10 +301,12 @@ hours, or straight away with **Check for Updates**.
 | `laughclipper/calibrate.py` | "Calibrate for your game": measures the game and your laughs, suggests a level |
 | `laughclipper/medal.py` | Reads Medal's hotkeys and spots when it's recording |
 | `laughclipper/sounds.py` | The optional notification sounds (made in code) |
+| `laughclipper/voice.py` | "Don't clip": offline voice command with Vosk |
 | `laughclipper/winutil.py` | Windows bits: startup, foreground app, process checks |
 | `LaughClipper.spec`, `installer/LaughClipper.iss` | PyInstaller build and Inno Setup installer |
 | `.github/workflows/release.yml`, `tests.yml` | Builds and publishes releases; runs the tests |
-| `tests/` | pytest tests (settings, triggers, games, clipping, clip check, Medal, sounds, setup guide) |
+| `site/`, `.github/workflows/pages.yml` | The one-page website, published with GitHub Pages |
+| `tests/` | pytest tests (settings, triggers, games, clipping, clip check, Medal, sounds, setup guide, voice) |
 
 </details>
 
@@ -292,7 +314,8 @@ hours, or straight away with **Check for Updates**.
 
 Built with [YAMNet](https://github.com/tensorflow/models/tree/master/research/audioset/yamnet) and
 [MediaPipe](https://github.com/google-ai-edge/mediapipe) (Apache 2.0), [Qt for Python](https://doc.qt.io/qtforpython-6/)
-(LGPL), [SoundCard](https://github.com/bastibe/SoundCard) and [keyboard](https://github.com/boppreh/keyboard).
+(LGPL), [Vosk](https://alphacephei.com/vosk/) (Apache 2.0), [SoundCard](https://github.com/bastibe/SoundCard) and
+[keyboard](https://github.com/boppreh/keyboard).
 
 Laugh Clipper isn't made by or affiliated with Medal. It just presses Medal's clip hotkey for you.
 
