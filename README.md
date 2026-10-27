@@ -175,6 +175,8 @@ count, your most clipped game and your best laugh.
 2. Run it. It installs just for you, so it doesn't need admin rights.
 3. Windows may show **"Windows protected your PC"** because the installer isn't code-signed yet. Click
    **More info → Run anyway**.
+4. If it says **"Smart App Control blocked an app that may be unsafe"** instead, see
+   [the FAQ](#smart-app-control-blocks-laugh-clipper) below.
 
 You'll also need [Medal](https://medal.tv) installed and running, since it's what actually records the clips.
 
@@ -195,6 +197,21 @@ The setup guide walks you through this on first launch (and any time from **Gene
 > "Wait after laughing stops", plus your longest laugh, so the start of the moment doesn't get cut off.
 
 ## FAQ
+
+<a id="smart-app-control-blocks-laugh-clipper"></a>
+<details>
+<summary><b>Smart App Control blocks Laugh Clipper.</b></summary>
+
+Smart App Control is a stricter Windows 11 feature that blocks every app that isn't code-signed, with no
+"Run anyway" option. Running as administrator doesn't help. Laugh Clipper isn't signed yet, so the only way to run it
+on a PC with Smart App Control on is to turn it off:
+
+**Start → Windows Security → App & browser control → Smart App Control settings → Off**
+
+Heads up: on most PCs, Smart App Control can't be turned back on afterwards without resetting Windows. Most PCs
+already have it off (Windows only enables it on fresh installs, and often switches it off by itself), so you'll only
+see this on some machines.
+</details>
 
 <details>
 <summary><b>The popup doesn't show up over my game.</b></summary>
