@@ -105,9 +105,10 @@ def ctrl(qapp, pc, monkeypatch, tmp_path):
     monkeypatch.setattr(Engine, "_listen", lambda *a: None)
     monkeypatch.setattr(clips, "HISTORY_PATH", tmp_path / "history.json")
 
-    def show_toast(self, mode, label, sound="laughter", test=False):
+    def show_toast(self, mode, label, sound="laughter", test=False, title=None):
         self.toasts.append((mode, sound))
         self.toast, self.toast_is_test = FakeToast(mode), test
+        self.toast.label, self.toast.title = label, title
         self.after_show(mode)
     monkeypatch.setattr(appmod.Controller, "show_toast", show_toast)
     (tmp_path / "Clips").mkdir()

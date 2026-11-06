@@ -39,7 +39,10 @@ DEFAULTS = {
     "bookmark_when_recording": False,  # while Medal is recording, press its bookmark key instead of clipping
     "bookmark_hotkey": "",     # Medal's bookmark hotkey; "" = read it from Medal's settings
     "voice_cancel": False,     # saying "don't clip" while the popup is up cancels it (needs the mic)
+    "hype_phrases": False,     # saying "clip that" saves a clip; "no way", "oh my god", "let's go" count as a moment
     "pause_hotkey": "",        # a key to pause/resume detection; "" = none
+    "pad_button": {},          # controller/wheel button that clips: {"id", "name", "button"}; {} = none
+    "pad_mode": "popup",       # "popup": it only works while a popup is showing; "always": it clips any time
     "smart_length": False,     # pick the Medal clip hotkey (30/60/120 s…) whose length fits the moment
     "long_laugh": 8,           # smart length: each this-many seconds of laughing moves up one clip length
     # sound cue
@@ -62,6 +65,7 @@ DEFAULTS = {
     "pause_tolerance": 1.5,    # a pause shorter than this still counts as the same laugh
     "cooldown": 20,
     "silence_level": 0.0015,
+    "group_laughs": False,     # your mic and another source laughing together triggers sooner and more easily
     # app
     "setup_done": False,       # the first-run setup guide has been seen
     "last_seen_version": "",   # "What's new" was shown for this version ("" = not since it existed)
@@ -118,6 +122,13 @@ def load():
         if S["sound_name"] not in CUES:
             S["sound_name"] = DEFAULTS["sound_name"]
         S["ignored_games"] = [g["exe"] for g in clean_games(S["ignored_games"])]
+        pad = S["pad_button"]
+        S["pad_button"] = ({"id": pad["id"], "name": str(pad.get("name") or ""), "button": str(pad["button"])}
+                           if isinstance(pad, dict) and isinstance(pad.get("id"), str)
+                           and isinstance(pad.get("button"), (str, int)) and not isinstance(pad.get("button"), bool)
+                           else {})
+        if S["pad_mode"] not in ("popup", "always"):
+            S["pad_mode"] = DEFAULTS["pad_mode"]
         if path != SETTINGS_PATH:
             save()
         return True

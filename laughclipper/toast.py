@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QWidget
 
 from . import winutil
 from .config import split_position
-from .engine import SOUNDS
+from .engine import sound_names
 from .theme import T
 from .widgets import Spring, clamp
 
@@ -50,7 +50,8 @@ class Toast(QWidget):
         self.saved_sub = "Sent to Medal"
         self.bookmark = False         # Medal is recording: this laugh will add a bookmark, not a clip
         self.source, self.hotkey = source, hotkey
-        self.sound_name, self.still = SOUNDS.get(sound, SOUNDS["laughter"])[:2]
+        self.sound_name, self.still = sound_names(sound)[:2]
+        self.title = f"{self.sound_name} detected"     # the app can say something else ("Group laugh"…)
         self.surprised = sound in SURPRISED
         self.total = self.left = max(float(seconds), 0.1)
         self.laughing = False
@@ -348,7 +349,7 @@ class Toast(QWidget):
             if live:
                 self.ring_rect = ring
             if mode == "nomedal":
-                title, sub = f"{self.sound_name} detected", "Medal isn't running, so no clip was saved"
+                title, sub = self.title, "Medal isn't running, so no clip was saved"
             else:
                 title, sub = "Clip didn't save", "Medal didn't make a clip. Is the hotkey right?"
             self.draw_texts(p, tx, cy, ring.left() - 14 - tx, title, sub, None)
@@ -362,8 +363,10 @@ class Toast(QWidget):
             if live:
                 self.ring_rect, self.btn_rect, self.nf_rect = ring, btn, nf
             if mode == "ask":
-                title = f"{self.sound_name} detected"
+                title = self.title
                 sub = f"{self.source}  ·  " + ("Medal is recording" if self.bookmark else f"{self.hotkey} to clip")
+                if not self.bookmark and not self.fits_sub(sub, nf.left() - 12 - tx):
+                    sub = f"{self.source}  ·  {self.hotkey}"           # long source names: drop "to clip"
                 frac = self.left / self.total
             elif self.laughing:
                 title, sub = ("Bookmarking" if self.bookmark else "Saving clip"), f"{self.still}  ·  {self.source}"
@@ -388,6 +391,10 @@ class Toast(QWidget):
             p.drawText(btn, Qt.AlignmentFlag.AlignCenter, label)
             draw_ring(p, ring, clamp(frac), self.hover_ring)
         p.restore()
+
+    @staticmethod
+    def fits_sub(sub, maxw):
+        return QFontMetricsF(T.font(13)).horizontalAdvance(sub) <= maxw
 
     def draw_texts(self, p, x, cy, maxw, title, sub, _):
         tf = T.font(15, 600, display=True)

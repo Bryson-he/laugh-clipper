@@ -54,30 +54,65 @@ def listener():
     return v
 
 
+def listen(listener, clip, gated=False):
+    """Feed a recording through the listener; returns what it heard as (kind, text) pairs."""
+    heard = []
+
+    def got(kind, text):
+        heard.append((kind, text))
+    listener.heard.connect(got)
+    try:
+        for chunk in speech(clip):
+            listener.feed(chunk, gated)
+    finally:
+        listener.heard.disconnect(got)
+    return heard
+
+
 @pytest.mark.parametrize("clip, cancels", [("dont_clip.wav", True), ("clip_that.wav", False)])
 def test_hears_dont_clip(listener, clip, cancels):
-    heard = []
-    listener.cancel.connect(heard.append)
+    S["voice_cancel"] = True
+    listener.start()
     try:
-        listener.start()
-        for chunk in speech(clip):
-            listener.feed(chunk)
+        heard = listen(listener, clip)
     finally:
-        listener.cancel.disconnect(heard.append)
         listener.stop()
-    assert bool(heard) is cancels
+    assert bool(heard) is cancels and all(k == "cancel" for k, _ in heard)
 
 
 def test_only_listens_while_a_popup_is_up(listener):
-    heard = []
-    listener.cancel.connect(heard.append)
-    try:
-        listener.stop()
-        for chunk in speech("dont_clip.wav"):
-            listener.feed(chunk)
-    finally:
-        listener.cancel.disconnect(heard.append)
-    assert heard == []
+    S["voice_cancel"] = True
+    listener.stop()
+    assert listen(listener, "dont_clip.wav") == []
+
+
+@pytest.mark.parametrize("clip, expect", [
+    ("clip_that.wav", ("clip", "clip that")),
+    ("no_way.wav", ("hype", "no way")),
+    ("lets_go.wav", ("hype", "let's go")),
+    ("no_wait_come_back.wav", None),          # heard as "no way [unk]": in a sentence, so it doesn't count
+    ("lets_see.wav", None),
+    ("nice_shot.wav", None),
+    ("dont_clip.wav", None),                  # not a hype phrase, and no popup is up
+])
+def test_hype_phrases(listener, clip, expect):
+    S["hype_phrases"] = True
+    heard = listen(listener, clip)
+    assert heard == ([expect] if expect else [])
+
+
+def test_hype_phrases_off_or_waiting_for_a_game(listener):
+    assert listen(listener, "no_way.wav") == []                       # off by default
+    S["hype_phrases"] = True
+    assert listen(listener, "no_way.wav", gated=True) == []
+
+
+def test_phrase_kinds():
+    assert voice.phrase_kind("no way no way") == "hype"
+    assert voice.phrase_kind("oh my god that [unk]") is None
+    assert voice.phrase_kind("can [unk] clip that") == "clip"
+    assert voice.phrase_kind("don't clip") == "cancel"
+    assert voice.grammar(False, False) == ["[unk]"]
 
 
 def test_voice_cancels_the_popup(ctrl, pc, qapp):

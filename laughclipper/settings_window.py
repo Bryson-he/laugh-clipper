@@ -8,9 +8,9 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (QFileDialog, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu, QMessageBox,
                                QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
-from . import clips, medal, sounds, winutil
+from . import clips, gamepad, medal, sounds, winutil
 from .config import DEFAULTS, S, clean_games, hotkey_label
-from .engine import SOUNDS, short_name, sound_level
+from .engine import SOUNDS, short_name, sound_level, sound_names
 from .theme import T
 from .version import VERSION
 from .widgets import (Chip, Collapsible, Disclosure, Group, KeyCap, LevelMeter, NavItem, PopupButton,
@@ -26,6 +26,8 @@ PAGES = [
     ("History", "", "#ff9500"),
 ]
 
+
+PAD_MODES = ["While a popup shows", "Any time"]    # the controller button's "Works" choice (pad_mode)
 
 SOUND_HINTS = {
     "laughter": "Laughs, giggles, chuckles and snickers.",
@@ -500,10 +502,26 @@ class SettingsWindow(QWidget):
         self.length_warn = g.add(Row("The start of a moment could get cut off", ""))
         self.length_warn.layout().insertWidget(0, WarningBadge(), 0, Qt.AlignmentFlag.AlignVCenter)
 
-        g = p.section("Voice command", footer="Uses a small speech model on your PC, so nothing you say "
-                                              "leaves it. It only listens while a popup is showing.")
+        g = p.section("Voice commands", footer="Uses a small speech model on your PC, so nothing you say "
+                                               "leaves it. Hype phrases need to be said on their own, not in "
+                                               "the middle of a sentence.")
         self.voice_row = g.add(Row("Cancel with your voice", "", self.switch("voice_cancel")))
+        self.hype_row = g.add(Row("Clip with hype phrases", "", self.switch("hype_phrases")))
         self.update_voice_row()
+
+        g = p.section("Controller or wheel", footer="Works with Xbox and PlayStation controllers, racing wheels "
+                                                    "and button boxes, even while the game is in front. Pick a "
+                                                    "button the game doesn't use much.")
+        self.pad_keycap = KeyCap("")
+        self.pad_keycap.clicked.connect(self.capture_pad)
+        self.pad_clear = QPushButton("Remove")
+        self.pad_clear.setObjectName("small")
+        self.pad_clear.clicked.connect(lambda: self.ctrl.set("pad_button", {}))
+        self.pad_row = g.add(Row("Clip button", "", self.pad_clear, self.pad_keycap))
+        self.pad_mode = Segmented(PAD_MODES, 0 if S["pad_mode"] == "popup" else 1)
+        self.pad_mode.changed.connect(lambda i: self.ctrl.set("pad_mode", ("popup", "always")[i]))
+        self.pad_mode_row = g.add(Row("Works", None, self.pad_mode))
+        self.update_pad_rows()
 
         g = p.section("Clip check", footer="After the hotkey, Laugh Clipper looks for the new clip in Medal's "
                                            "folder, so the popup only says “Clip saved” when it really was.")
@@ -593,16 +611,37 @@ class SettingsWindow(QWidget):
 
     def update_voice_row(self):
         from . import voice
+        mic_off = " Turn on your microphone on the Audio page first." if not S["listen_mic"] else ""
         if not voice.available():
-            text = "The speech model isn't installed with this copy of Laugh Clipper."
-        elif not S["listen_mic"]:
-            text = "Say \u201cdon\u2019t clip\u201d while the popup is up. Turn on your microphone on the Audio " \
-                   "page first."
+            text = hype = "The speech model isn't installed with this copy of Laugh Clipper."
         else:
             text = ("Say \u201cdon\u2019t clip\u201d or \u201ccancel clip\u201d while the popup is up and it "
-                    "won\u2019t save.")
+                    "won\u2019t save." + mic_off)
+            hype = ("Say \u201cclip that\u201d to save a clip straight away, or shout \u201cno way\u201d, "
+                    "\u201coh my god\u201d or \u201clet\u2019s go\u201d to count it as a moment." + mic_off)
         self.voice_row.set_sub(text)
-        self.voice_row.setEnabled(voice.available())
+        self.hype_row.set_sub(hype)
+        for row in (self.voice_row, self.hype_row):
+            row.setEnabled(voice.available())
+
+    def capture_pad(self):
+        self.ctrl.capture_pad_button()
+        self.update_pad_rows()
+
+    def update_pad_rows(self):
+        info = S["pad_button"]
+        if self.ctrl.pad_capture:
+            self.pad_keycap.set_label("Press a button\u2026")
+            self.pad_row.set_sub("Press the button on your controller or wheel that should save clips.")
+        elif info:
+            self.pad_keycap.set_label(gamepad.button_name(info))
+            self.pad_row.set_sub(f"{gamepad.button_name(info)} on your {info.get('name') or 'controller'} "
+                                 "saves the clip. Click to change it.")
+        else:
+            self.pad_keycap.set_label("Not set")
+            self.pad_row.set_sub("Click, then press a button on your controller or wheel.")
+        self.pad_clear.setVisible(bool(info) and not self.ctrl.pad_capture)
+        self.pad_mode_row.setEnabled(bool(info))
 
     def record_bookmark_key(self):
         self.bm_keycap.recording = True
@@ -639,6 +678,10 @@ class SettingsWindow(QWidget):
             opts.resized.connect(panel.refresh)
             self.sound_opts[key] = (more, panel, opts)
         self.update_sound_opts()
+        g = p.section()
+        g.add(Row("Group laughs", "When you and your friends (or the game) laugh at the same time, it triggers "
+                                  "sooner and at a lower level. Needs your mic and some PC audio on.",
+                  self.switch("group_laughs")))
         g = p.section(footer="Watch the live score while you laugh, then set the trigger just below where "
                              "it usually peaks.")
         self.live_meter = LevelMeter(210)
@@ -719,7 +762,7 @@ class SettingsWindow(QWidget):
         if not items:
             g.add(Row("No clips yet", "Clips Laugh Clipper saves for you will show up here."))
         for it in items:
-            name = SOUNDS.get(it.get("sound"), ("Laughter",))[0]
+            name = sound_names(it.get("sound"))[0]
             title = f"{name}  ·  {it['game']}" if it.get("game") else name
             score = it.get("score") or 0
             sub = "  ·  ".join(x for x in (when(it["time"]), it.get("source", ""),
@@ -1013,8 +1056,12 @@ class SettingsWindow(QWidget):
         if key == "pause_hotkey":
             self.pause_keycap.recording = False
             self.update_pause_row()
-        if key in ("listen_mic", "voice_cancel"):
+        if key in ("listen_mic", "voice_cancel", "hype_phrases"):
             self.update_voice_row()
+        if key == "pad_button":
+            self.update_pad_rows()
+        if key == "pad_mode":
+            self.pad_mode.set_items(PAD_MODES, 0 if S["pad_mode"] == "popup" else 1)
         if key in ("bookmark_hotkey", "bookmark_when_recording"):
             self.bm_keycap.recording = False
             self.update_medal_keys()

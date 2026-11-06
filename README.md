@@ -105,11 +105,26 @@ them in, and it warns you if they don't match.
 </picture>
 </div>
 
-### 🗣️ Say "don't clip"
+### 👥 Knows when everyone's laughing
 
-Turn on **Clipping → Cancel with your voice** and, while a popup is up, just say **"don't clip"** (or "cancel clip")
-to call it off, even during an auto-save countdown. Speech recognition runs offline on your PC with
-[Vosk](https://alphacephei.com/vosk/), listens only for those few words, and only while a popup is showing.
+Turn on **Detection → Group laughs** and when you and your friends (or the game) crack up at the same time, it
+triggers sooner and at a lower level than a laugh on its own. A whole lobby losing it is almost always worth a clip.
+
+### 🗣️ Voice commands
+
+- **"Clip that"** saves a clip straight away. Shout **"no way"**, **"oh my god"** or **"let's go"** and it counts as
+  a moment, just like a laugh. Turn on **Clipping → Clip with hype phrases**.
+- **"Don't clip"** (or "cancel clip") while a popup is up calls it off, even during an auto-save countdown. Turn on
+  **Clipping → Cancel with your voice**.
+
+Speech recognition runs offline on your PC with [Vosk](https://alphacephei.com/vosk/) and only listens for those few
+phrases. Hype phrases need to be said on their own, so "no wait, come back" doesn't set it off.
+
+### 🕹️ Clip with a controller or wheel
+
+Pick any button on an Xbox or PlayStation controller, a racing wheel or a button box (**Clipping → Clip button**,
+then press it). It saves the clip while a popup is showing, or any time you like. It works while the game is in
+front, with nothing extra to install.
 
 ### 👎 Learns what isn't funny
 
@@ -318,7 +333,8 @@ hours, or straight away with **Check for Updates**.
 | `laughclipper/calibrate.py` | "Calibrate for your game": measures the game and your laughs, suggests a level |
 | `laughclipper/medal.py` | Reads Medal's hotkeys and spots when it's recording |
 | `laughclipper/sounds.py` | The optional notification sounds (made in code) |
-| `laughclipper/voice.py` | "Don't clip": offline voice command with Vosk |
+| `laughclipper/voice.py` | Voice commands ("don't clip", "clip that", hype phrases), offline with Vosk |
+| `laughclipper/gamepad.py` | Controller and wheel buttons (Windows' WinMM joystick API) |
 | `laughclipper/winutil.py` | Windows bits: startup, foreground app, process checks |
 | `LaughClipper.spec`, `installer/LaughClipper.iss` | PyInstaller build and Inno Setup installer |
 | `.github/workflows/release.yml`, `tests.yml` | Builds and publishes releases; runs the tests |

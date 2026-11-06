@@ -43,7 +43,7 @@ from laughclipper import app as appmod, config, medal, settings_window, theme, t
 from laughclipper.config import S  # noqa: E402
 from laughclipper.theme import T  # noqa: E402
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 MICS = ["Wave:3 Mic (Elgato Wave:3)", "Headset Microphone (Arctis Nova Pro Wireless)"]
 SPEAKERS = ["Game (Elgato Virtual Audio)", "Voice Chat (Elgato Virtual Audio)", "Browser (Elgato Virtual Audio)",
             "Music (Elgato Virtual Audio)", "System (Elgato Virtual Audio)"]
@@ -62,7 +62,8 @@ config.load()
 S.update({
     "listen_mic": True, "mic_device": "", "outputs": SPEAKERS[:2], "monitor": 1, "position": "bottom-center",
     "hotkey": "shift+f7", "bookmark_when_recording": True, "sound_cue": True, "voice_cancel": True,
-    "pause_hotkey": "ctrl+alt+p", "smart_length": True,
+    "pause_hotkey": "ctrl+alt+p", "smart_length": True, "hype_phrases": True, "group_laughs": True,
+    "pad_button": {"id": "VID_045E&PID_028E", "name": "Xbox 360 controller", "button": "7"},
     "sound_device": SPEAKERS[0], "auto_clip": True, "clip_delay": 8, "max_wait": 30, "triggers": ["laughter", "cheering"],
     "threshold": 0.3, "min_laugh": 1.0, "pause_tolerance": 1.5, "game_only": True,
     "games": [{"exe": "rocketleague.exe", "name": "Rocket League"}, {"exe": "valorant.exe", "name": "VALORANT"},
@@ -315,7 +316,8 @@ def popup_autosave():
 
 def popup_gallery():
     """Still frames of the different popups, stacked on one card."""
-    items = [("ask", "Game", "cheering"), ("ask", "Your mic", "screaming"), ("pending", "Voice Chat", "laughter"),
+    items = [("ask", "Game", "cheering"), ("group", "You + Voice Chat", "laughter"),
+             ("hype", "Your mic", "hype"), ("pending", "Voice Chat", "laughter"),
              ("saved", "Game", "laughter"), ("bookmarked", "Game", "laughter"), ("cancelled", "Game", "laughter"),
              ("nomedal", "Game", "laughter")]
     gap, top = 84, 18
@@ -330,6 +332,9 @@ def popup_gallery():
             t.saved_sub = "In Medal  ·  Rocket League"
             t.check.snap(1.0)
             t.close_at = None
+        if mode in ("group", "hype"):
+            t = make_toast("ask", source, sound, 8)
+            t.title = "Group laugh" if mode == "group" else "“No way”"
         if mode == "cancelled":
             t = make_toast("info", source, sound, 8)
             t.info = ("cancel", "Cancelled", "You said \u201cdon\u2019t clip\u201d")

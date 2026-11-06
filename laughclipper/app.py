@@ -14,7 +14,7 @@ from PySide6.QtGui import QColor, QGuiApplication, QIcon, QImage, QPainter, QPix
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon, QWidget
 
-from . import clips, config, medal, sounds, voice, winutil
+from . import clips, config, gamepad, medal, sounds, voice, winutil
 from .config import S, hotkey_label
 from .engine import SOUNDS, Engine, short_name, sound_level
 from .theme import T
@@ -55,6 +55,11 @@ def badged(pix, state):
         p.drawEllipse(r.adjusted(d * 0.14, d * 0.14, -d * 0.14, -d * 0.14))
     p.end()
     return out
+
+
+def source_label(key):
+    """How the popup and history name a source: "Your mic", or the output's short name ("Voice Chat")."""
+    return "Your mic" if key[0] == "mic" else short_name(key[1])
 
 
 def sorted_screens():
@@ -124,6 +129,7 @@ class Controller(QObject):
         self.icon = QIcon(str(config.resource("assets/icon.png")))
         self.engine = Engine()
         self.engine.laugh.connect(self.on_laugh)
+        self.engine.group.connect(self.on_group_laugh)
         self.engine.devices.connect(self.on_devices)
         self.devices = None
         self.updater = Updater()
@@ -156,11 +162,18 @@ class Controller(QObject):
         self._hotkey_hit.connect(self.on_hotkey_pressed)
         self._pause_hit.connect(self.toggle_pause)
         self.voice = voice.VoiceCommands()
-        self.voice.cancel.connect(self.on_voice_cancel)
+        self.voice.heard.connect(self.on_voice)
         self.engine.voice = self.voice
-        if S["voice_cancel"]:
+        if S["voice_cancel"] or S["hype_phrases"]:
             self.voice.load()
         self._hotkey_recorded.connect(self.apply_recorded)
+        self.pads = gamepad.Pads()
+        self.pads.pressed.connect(self.on_pad)
+        self.pad_capture = False       # waiting for you to press the button to use
+        self.pad_capture_timer = QTimer(self)
+        self.pad_capture_timer.setSingleShot(True)
+        self.pad_capture_timer.setInterval(10000)
+        self.pad_capture_timer.timeout.connect(lambda: self.stop_pad_capture())
         self.save_timer = QTimer(self)
         self.save_timer.setSingleShot(True)
         self.save_timer.setInterval(400)
@@ -189,6 +202,7 @@ class Controller(QObject):
         self.game_timer.start()
         self.medal_timer.start()
         self.update_timer.start()
+        self.update_pads()
         if S["check_updates"]:
             QTimer.singleShot(5000, lambda: self.check_updates(False))
 
@@ -209,8 +223,10 @@ class Controller(QObject):
             self.check_game()
         if key == "medal_check":
             self.check_medal()
-        if key == "voice_cancel" and value:
+        if key in ("voice_cancel", "hype_phrases") and value:
             self.voice.load()
+        if key == "pad_button":
+            self.update_pads()
 
     # ----- Medal -----
     def check_medal(self):
@@ -401,6 +417,42 @@ class Controller(QObject):
             log.info("clip (you pressed the hotkey)")
             self.after_clip()
 
+    # ----- controller / wheel button -----
+    def update_pads(self):
+        """Only read controllers while there's a button to watch for (or one being picked)."""
+        self.pads.set_active(bool(S["pad_button"]) or self.pad_capture)
+
+    def capture_pad_button(self):
+        """The next controller button pressed becomes the clip button (give up after 10 s)."""
+        self.pad_capture = True
+        self.update_pads()
+        self.pad_capture_timer.start()
+
+    def stop_pad_capture(self, info=None):
+        self.pad_capture = False
+        self.pad_capture_timer.stop()
+        if info:
+            log.info("clip button: %s", gamepad.label(info))
+            S["pad_button"] = {}                # so the change always fires, even for the same button
+            self.set("pad_button", info)
+        else:
+            self.update_pads()
+            self.changed.emit("pad_button")     # the settings page stops saying "Press a button…"
+
+    def on_pad(self, info):
+        if self.pad_capture:
+            self.stop_pad_capture(info)
+            return
+        if not gamepad.same_button(info, S["pad_button"]):
+            return
+        popup = self.toast is not None and self.toast.mode in ("ask", "pending") and not self.toast_is_test
+        if popup:
+            log.info("clip (controller button)")
+            self.clip()
+        elif S["pad_mode"] == "always":
+            log.info("clip (controller button, no popup)")
+            self.clip_now(info.get("name") or "Controller", "button", "Clip button")
+
     def send_hotkey(self, key=None):
         """Press Medal's clip hotkey (or another of its hotkeys, like bookmark)."""
         self.sent_at = time.monotonic()
@@ -411,27 +463,66 @@ class Controller(QObject):
             log.warning("Couldn't send hotkey: %s", e)
 
     # ----- laughs, popups and clipping -----
-    def on_laugh(self, key, sound):
+    def on_laugh(self, key, sound, title=None, label=None):
         now = time.time()
         if self.pending or not S["running"] or now - self.last_prompt < S["cooldown"]:
             return
         self.last_prompt = now
-        kind, name = key
-        label = "Your mic" if kind == "mic" else short_name(name)
+        label = label or source_label(key)
         self.moment = {"key": key, "sound": sound, "source": label, "game": self.game, "auto": S["auto_clip"],
                        "peak": self.engine.sound.get(key, (None, 0.0))[1],
                        "began": now - S["min_laugh"]}      # it had been going this long before it triggered
         if not self.check_medal():
             log.info("not clipping: Medal isn't running")
-            self.show_toast("nomedal", label, sound)
+            self.show_toast("nomedal", label, sound, title=title)
         elif S["auto_clip"] and S["clip_delay"] > 0:
             self.pending = {"start": now, "last": now}
-            self.show_toast("pending", label, sound)
+            self.show_toast("pending", label, sound, title=title)
         elif S["auto_clip"]:
-            self.show_toast("saving", label, sound)
+            self.show_toast("saving", label, sound, title=title)
             self.clip()
         else:
-            self.show_toast("ask", label, sound)
+            self.show_toast("ask", label, sound, title=title)
+
+    def on_group_laugh(self, key, sound, others):
+        """Your mic and another source laughing at the same time."""
+        keys = sorted({key, *map(tuple, others)}, key=lambda k: k[0] != "mic")     # your mic first
+        title = "Group laugh" if sound == "laughter" else f"Group {SOUNDS[sound][0].lower()}"
+        names = ["You" if k[0] == "mic" else source_label(k) for k in keys]     # short, so the popup fits it
+        self.on_laugh(tuple(key), sound, title, " + ".join(names))
+
+    def on_voice(self, kind, text):
+        """The speech model heard "don't clip", "clip that" or a hype phrase."""
+        if kind == "cancel":
+            self.on_voice_cancel(text)
+            return
+        popup = self.toast is not None and self.toast.mode in ("ask", "pending") and not self.toast_is_test
+        title = f"“{text[:1].upper()}{text[1:]}”"
+        if kind == "clip":
+            log.info('clip (you said "%s")', text)
+            self.clip_now("Your mic", "hype", title)
+        elif not popup:                 # a hype phrase during a popup is the same moment
+            self.on_laugh(("mic", S["mic_device"]), "hype", title)
+
+    def clip_now(self, label, sound, title=None):
+        """Save a clip straight away ("clip that", or the controller button): the popup's Clip button if one is
+        up, otherwise a fresh moment that goes straight to saving."""
+        if self.toast is not None and self.toast.mode in ("ask", "pending") and not self.toast_is_test:
+            self.clip()
+            return
+        if not S["running"]:
+            return
+        now = time.time()
+        self.pending = None
+        self.last_prompt = now
+        self.moment = {"key": None, "sound": sound, "source": label, "game": self.game, "auto": False,
+                       "peak": 0.0, "began": now}
+        if not self.check_medal():
+            log.info("not clipping: Medal isn't running")
+            self.show_toast("nomedal", label, sound, title=title)
+            return
+        self.show_toast("saving", label, sound, title=title)
+        self.clip()
 
     def on_tick(self):
         if not self.pending:
@@ -558,7 +649,7 @@ class Controller(QObject):
             self.toast.dismiss()
         log.info("auto clip cancelled")
 
-    def show_toast(self, mode, label, sound="laughter", test=False):
+    def show_toast(self, mode, label, sound="laughter", test=False, title=None):
         if self.toast is not None:
             old, self.toast = self.toast, None
             try:
@@ -568,6 +659,8 @@ class Controller(QObject):
         seconds = S["clip_delay"] if mode == "pending" else S["popup_seconds"]
         t = Toast(self.screen_for(S["monitor"]), S["position"], mode, label, sound, hotkey_label(), seconds)
         t.bookmark = not test and self.will_bookmark()
+        if title:
+            t.title = title
         t.clip_requested.connect(self.clip)
         t.not_funny.connect(self.on_not_funny)
         t.close_requested.connect(self.on_toast_close)
@@ -621,6 +714,10 @@ class Controller(QObject):
         self.pending = None
         self.last_prompt = time.time()
         sound = self.moment["sound"]
+        if sound not in SOUNDS:                       # a hype phrase: nothing to tune, just skip it
+            self.record("not_funny")
+            self.toast.set_info("thumb", "Got it", "Skipped this one")
+            return
         old = sound_level(sound)
         new = round(min(0.9, max(old * 1.1, old + 0.02)), 2)
         self.set("sound_levels", {**S["sound_levels"], sound: new})
@@ -753,6 +850,7 @@ class Controller(QObject):
                                   "the settings.", self.icon, 5000)
 
     def quit(self):
+        self.pads.set_active(False)
         self.engine.stop_all()
         config.save()
         try:

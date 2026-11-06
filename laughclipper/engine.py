@@ -23,6 +23,8 @@ SR = 48000
 HOP = 0.25                 # analyse a 1 s window every 0.25 s
 CHUNK = 0.05               # audio is read in 50 ms pieces, so the loudness meter updates 20 times a second
 KEEP_RATIO = 0.55          # once laughing, a score above 55% of the trigger keeps it "still laughing"
+GROUP_RATIO = 0.75         # group laughs: each source only needs 75% of its trigger level…
+GROUP_WINDOW = 1.0         # …as long as your mic and another source are both at it within a second of each other
 # sounds you can trigger on: key -> (name, "still ..." text, YAMNet class names)
 SOUNDS = {
     "laughter": ("Laughter", "Still laughing",
@@ -32,6 +34,8 @@ SOUNDS = {
     "screaming": ("Screaming", "Still screaming", {"Screaming"}),
     "gasp": ("Gasp", "Still going", {"Gasp"}),
 }
+# things that start a moment without being a YAMNet sound: name, "still ..." text
+OTHER_SOUNDS = {"hype": ("Hype", "Still going"), "button": ("Clip button", "Saving")}
 LABEL_SOUND = {label: key for key, (_, _, labels) in SOUNDS.items() for label in labels}
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/1/yamnet.tflite"
 
@@ -154,6 +158,11 @@ def classify(classifier, samples):
     return scores, top
 
 
+def sound_names(sound):
+    """(name, "still ..." text) for a sound key, including the ones that aren't YAMNet sounds."""
+    return SOUNDS.get(sound) or OTHER_SOUNDS.get(sound) or SOUNDS["laughter"]
+
+
 def source_id(key):
     """How a source is named in the `sound_sources` setting: "mic", or "out:<device name>"."""
     return "mic" if key[0] == "mic" else f"out:{key[1]}"
@@ -204,6 +213,7 @@ class TriggerWindow:
 
 class Engine(QObject):
     laugh = Signal(object, str)         # source key ("mic", name) or ("out", name), sound key ("cheering")
+    group = Signal(object, str, list)   # a group laugh: source key, sound key, the other sources laughing too
     devices = Signal(list, list, str)   # microphones, outputs, default output
 
     def __init__(self):
@@ -215,8 +225,9 @@ class Engine(QObject):
         self.volume = {}     # key -> loudness (RMS) of the last 50 ms, for the meters
         self.scores = {}     # key -> every sound's latest score, e.g. {"laughter": 0.4, "cheering": 0.1}
         self.activity = {}   # key -> last time the score was above the keep-alive level
+        self.near = {}       # key -> last time the score was above the group-laugh level
         self.gated = False   # True while waiting for a game: keep recording, but don't classify
-        self.voice = None    # voice.VoiceCommands, fed the mic's audio while a popup is up
+        self.voice = None    # voice.VoiceCommands, fed the mic's audio
 
     # ----- sources -----
     def wanted(self):
@@ -232,7 +243,7 @@ class Engine(QObject):
         for key in list(self.threads):
             if key not in wanted:
                 self.threads.pop(key).set()
-                for d in (self.levels, self.sound, self.heard, self.activity, self.volume, self.scores):
+                for d in (self.levels, self.sound, self.heard, self.activity, self.volume, self.scores, self.near):
                     d.pop(key, None)
         for key in wanted - set(self.threads):
             stop = threading.Event()
@@ -270,6 +281,15 @@ class Engine(QObject):
         """True while anything is laughing, allowing short pauses (pause tolerance)."""
         return (now or time.time()) - self.last_activity() <= S["pause_tolerance"]
 
+    def together(self, key, now=None):
+        """The other sources that sounded like laughing in the last GROUP_WINDOW seconds, if they make this a
+        group laugh: your mic plus at least one PC output (two outputs could just be the same audio twice, like
+        Wave Link's monitor mix)."""
+        now = now or time.time()
+        others = [k for k, t in list(self.near.items())
+                  if k != key and k in self.threads and k[0] != key[0] and now - t <= GROUP_WINDOW]
+        return others
+
     def max_level(self):
         vals = [v for k, v in list(self.levels.items()) if k in self.threads and isinstance(v, float)]
         return max(vals, default=0.0)
@@ -306,6 +326,7 @@ class Engine(QObject):
             per_hop = round(HOP / CHUNK)
             chunks = 0
             trigger = TriggerWindow()
+            group = TriggerWindow()        # the same, with the lower group-laugh bar
             source = source_id(key)
             try:
                 with dev.recorder(samplerate=SR) as rec:
@@ -316,7 +337,7 @@ class Engine(QObject):
                         window = np.concatenate([window[len(mono):], mono])
                         self.volume[key] = float(np.sqrt(np.mean(mono ** 2)))
                         if kind == "mic" and self.voice is not None:
-                            self.voice.feed(mono)
+                            self.voice.feed(mono, self.gated)
                         chunks += 1
                         if chunks % per_hop:
                             continue
@@ -327,12 +348,14 @@ class Engine(QObject):
                             self.heard[key] = ("paused", vol)
                             self.scores.pop(key, None)
                             trigger.clear()
+                            group.clear()
                             continue
                         if float(np.sqrt(np.mean(window ** 2))) < S["silence_level"]:
                             self.levels[key] = 0.0
                             self.heard[key] = ("silence", vol)
                             self.scores.pop(key, None)
                             trigger.clear()
+                            group.clear()
                             continue
 
                         scores, top = classify(classifier, window)
@@ -345,6 +368,18 @@ class Engine(QObject):
                         self.heard[key] = (top, vol)
                         if strength >= KEEP_RATIO:
                             self.activity[key] = time.time()
+                        if strength >= GROUP_RATIO:
+                            self.near[key] = time.time()
+                        if S["group_laughs"]:
+                            together = group.feed(sound if strength >= GROUP_RATIO else None,
+                                                  round(S["min_laugh"] / 2 / HOP))
+                            others = self.together(key) if together else []
+                            if others:
+                                log.info("[%s] group %s with %s (score %.2f)", label, together,
+                                         ", ".join(short_name(k[1]) or k[0] for k in others), score)
+                                trigger.clear()
+                                self.group.emit(key, together, others)
+                                continue
                         heard = trigger.feed(sound if strength >= 1 else None, round(S["min_laugh"] / HOP))
                         if heard:
                             log.info("[%s] %s (score %.2f)", label, heard, score)
