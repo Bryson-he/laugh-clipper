@@ -165,4 +165,5 @@ def new_entry(moment, status, path=""):
         "length": int(moment.get("length") or 0),     # clip length used (s), 0 = unknown
         "status": status,   # "saved" | "failed" | "unchecked" (no folder to check) | "bookmarked" | "not_funny"
         "file": path,
+        "why": moment.get("why", ""),      # for "failed": "admin" when the game ran as administrator
     }

@@ -11,7 +11,7 @@ DARK = {
     "track": "#48484a", "thumb": "#636366", "knob": "#ffffff", "keycap_shadow": "#141416",
     "hover": (255, 255, 255, 16), "menu": "#2c2c2e", "scroll": (255, 255, 255, 55),
     "meter_bg": (255, 255, 255, 28), "meter_idle": "#8e8e93",
-    "wall1": "#2b4fd6", "wall2": "#9b3fc6", "bezel": "#0b0b0d",
+    "wall1": "#2b4fd6", "wall2": "#9b3fc6", "bezel": "#0b0b0d", "field": "#3a3a3c",
 }
 LIGHT = {
     "window": "#f2f2f7", "sidebar": "#e8e8ed", "group": "#ffffff", "group_border": (0, 0, 0, 14),
@@ -21,7 +21,7 @@ LIGHT = {
     "track": "#e3e3e8", "thumb": "#ffffff", "knob": "#ffffff", "keycap_shadow": "#c4c4ca",
     "hover": (0, 0, 0, 12), "menu": "#ffffff", "scroll": (0, 0, 0, 60),
     "meter_bg": (0, 0, 0, 20), "meter_idle": "#aeaeb2",
-    "wall1": "#4f86ff", "wall2": "#b56be0", "bezel": "#1d1d1f",
+    "wall1": "#4f86ff", "wall2": "#b56be0", "bezel": "#1d1d1f", "field": "#ffffff",
 }
 WEIGHTS = {400: QFont.Weight.Normal, 500: QFont.Weight.Medium, 600: QFont.Weight.DemiBold, 700: QFont.Weight.Bold}
 
@@ -75,6 +75,10 @@ class Theme(QObject):
         c = self.c(key)
         return f"rgba({c.red()},{c.green()},{c.blue()},{c.alpha()})"
 
+    def rgba(self, key, alpha):
+        c = self.c(key)
+        return f"rgba({c.red()},{c.green()},{c.blue()},{round(alpha * 255)})"
+
     def font(self, px, weight=400, display=False):
         f = QFont(self.display if display else self.family)
         f.setPixelSize(max(1, int(round(px))))
@@ -90,20 +94,27 @@ class Theme(QObject):
         QLabel:disabled {{ color: {c('tertiary')}; }}
         #root, #content {{ background: {c('window')}; }}
         #sidebar {{ background: {c('sidebar')}; border-right: 1px solid {c('separator')}; }}
+        #root[mica="true"] {{ background: transparent; }}
+        #sidebar[mica="true"] {{ background: {self.rgba('sidebar', 0.5 if self.dark else 0.55)}; }}
         QLabel#pageTitle {{ font-family: "{self.display}"; font-size: 24px; font-weight: 700; }}
         QLabel#appName {{ font-family: "{self.display}"; font-size: 15px; font-weight: 600; }}
         QLabel#secondary, QLabel#footer, QLabel#value {{ color: {c('secondary')}; font-size: 12px; }}
         QLabel#secondary:disabled {{ color: {c('tertiary')}; }}
         QLabel#header {{ color: {c('secondary')}; font-size: 12px; font-weight: 600; }}
-        QPushButton {{ background: {c('control')}; color: {c('text')}; border: none; border-radius: 7px;
-                       padding: 5px 14px; min-height: 18px; }}
+        QPushButton {{ background: {c('control')}; color: {c('text')}; border: 2px solid transparent;
+                       border-radius: 7px; padding: 3px 12px; min-height: 18px; }}
+        QPushButton:focus {{ border-color: {c('text')}; }}
+        QLineEdit#search {{ background: {c('field')}; color: {c('text')}; border: 2px solid transparent;
+                            border-radius: 8px; padding: 3px 8px; min-height: 20px;
+                            selection-background-color: {c('accent')}; selection-color: white; }}
+        QLineEdit#search:focus {{ border-color: {c('accent')}; }}
         QPushButton:hover {{ background: {c('control_hover')}; }}
         QPushButton:pressed {{ background: {c('control_press')}; }}
         QPushButton:disabled {{ color: {c('tertiary')}; }}
         QPushButton#prominent {{ background: {c('accent')}; color: white; font-weight: 600; }}
         QPushButton#prominent:hover {{ background: {c('accent_hover')}; }}
         QPushButton#prominent:disabled {{ background: {c('control')}; color: {c('tertiary')}; }}
-        QPushButton#small {{ padding: 2px 10px; font-size: 12px; min-height: 16px; }}
+        QPushButton#small {{ padding: 0px 8px; font-size: 12px; min-height: 16px; }}
         QScrollArea {{ background: transparent; border: none; }}
         QScrollBar:vertical {{ background: transparent; width: 10px; margin: 4px 2px; }}
         QScrollBar::handle:vertical {{ background: {c('scroll')}; border-radius: 3px; min-height: 30px; }}

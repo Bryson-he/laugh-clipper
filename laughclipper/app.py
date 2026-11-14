@@ -718,6 +718,8 @@ class Controller(QObject):
         else:
             self.tray.showMessage("Clip didn't save", "Medal didn't make a clip. Check the hotkey on the Clipping "
                                   "page matches Medal's.", self.icon, 6000)
+        if self.moment is not None and self.game_admin:
+            self.moment["why"] = "admin"
         self.record("failed")
         self.failed_entry = self.history[-1]
 
@@ -756,14 +758,14 @@ class Controller(QObject):
         log.info("auto clip cancelled")
 
     def show_toast(self, mode, label, sound="laughter", test=False, title=None):
-        if self.toast is not None:
-            old, self.toast = self.toast, None
-            try:
-                old.close()
-            except RuntimeError:
-                pass
+        old, self.toast = self.toast, None
         seconds = S["clip_delay"] if mode == "pending" else S["popup_seconds"]
         t = Toast(self.screen_for(S["monitor"]), S["position"], mode, label, sound, hotkey_label(), seconds)
+        if old is not None:
+            try:
+                t.adopt(old)            # a popup is already up: the new one grows out of it
+            except RuntimeError:
+                old = None
         t.bookmark = not test and self.will_bookmark()
         if title:
             t.title = title
@@ -773,6 +775,11 @@ class Controller(QObject):
         t.finished.connect(lambda t=t: self.on_toast_done(t))
         self.toast, self.toast_is_test = t, test
         t.show()
+        if old is not None:             # closed only now the new one is up, so there's never a gap
+            try:
+                old.close()
+            except RuntimeError:
+                pass
         self.after_show(mode)
 
     def after_show(self, mode):

@@ -3,9 +3,9 @@
 from datetime import date, datetime
 from pathlib import Path
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer, Signal
-from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import (QFileDialog, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu, QMessageBox,
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QGuiApplication, QKeySequence, QShortcut
+from PySide6.QtWidgets import (QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu, QMessageBox,
                                QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
 from . import clips, config, gamepad, medal, sounds, winutil
@@ -13,18 +13,22 @@ from .config import DEFAULTS, S, clean_games, hotkey_label
 from .engine import SOUNDS, short_name, sound_level, sound_names
 from .theme import T
 from .version import VERSION
-from .widgets import (Chip, Collapsible, Disclosure, Group, KeyCap, LevelMeter, NavItem, PopupButton,
-                      PositionPicker, Row, Segmented, Slider, StatsBar, StatusPill, Switch, WarningBadge,
-                      loudness)
+from .widgets import (Chip, Collapsible, Disclosure, Group, KeyCap, LevelMeter, NavList, PageFade, PopupButton,
+                      PositionPicker, ResultList, Row, Segmented, Slider, StatsBar, StatusPill, Switch, Thumb,
+                      WarningBadge, clamp, loudness)
 
-PAGES = [
-    ("General", "", "#8e8e93"),
-    ("Audio", "", "#ff2d55"),
-    ("Notification", "", "#ff3b30"),
-    ("Clipping", "", "#5e5ce6"),
-    ("Detection", "", "#34c759"),
-    ("History", "", "#ff9500"),
+PAGES = [                       # (title, Segoe Fluent icon, tile colour); Ctrl+1…8 jump to them
+    ("General", "\ue713", "#8e8e93"),
+    ("Games", "\ue7fc", "#af52de"),
+    ("Audio", "\ue720", "#ff2d55"),
+    ("Detection", "\ue9d9", "#34c759"),
+    ("Clipping", "\ue714", "#5e5ce6"),
+    ("Shortcuts", "\ue765", "#0a84ff"),
+    ("Notification", "\uea8f", "#ff3b30"),
+    ("History", "\ue81c", "#ff9500"),
 ]
+HISTORY_FILTERS = ["All", "Saved", "Didn't save", "Not funny"]
+KEPT = ("saved", "unchecked", "bookmarked")       # history statuses that count as a clip you have
 
 
 PAD_MODES = ["While a popup shows", "Any time"]    # the controller button's "Works" choice (pad_mode)
@@ -53,6 +57,25 @@ def when(iso):
     days = (date.today() - t.date()).days
     day = "Today" if days == 0 else "Yesterday" if days == 1 else f"{t:%a} {t.day} {t:%b}"
     return f"{day}, {clock}"
+
+
+def clock(iso):
+    """'2026-10-21T21:09:18' -> '9:09 PM'."""
+    try:
+        t = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return ""
+    return f"{t.hour % 12 or 12}:{t.minute:02d} {'AM' if t.hour < 12 else 'PM'}"
+
+
+def day_name(iso):
+    """'Today', 'Yesterday' or 'Wednesday 4 November' for a history entry's time."""
+    try:
+        t = datetime.fromisoformat(iso)
+    except (TypeError, ValueError):
+        return "Earlier"
+    days = (date.today() - t.date()).days
+    return "Today" if days == 0 else "Yesterday" if days == 1 else f"{t:%A} {t.day} {t:%B}"
 
 
 def secs(v):
@@ -129,6 +152,7 @@ class SoundOptions(QWidget):
         row.addWidget(self.reset)
         self.slider = Slider(0.05, 0.9, 0.01, sound_level(key))
         self.slider.setFixedWidth(210)
+        self.slider.setAccessibleName(f"{SOUNDS[key][0]} trigger level")
         self.slider.valueChanged.connect(self.level_moved)
         row.addWidget(self.slider)
         self.value = QLabel()
@@ -212,6 +236,12 @@ class SettingsWindow(QWidget):
         self.setWindowIcon(ctrl.icon)
         self.resize(900, 640)
         self.setMinimumSize(800, 560)
+        # Windows 11: the sidebar is see-through to Mica, like Windows' own Settings. Has to be decided before
+        # the window exists; apply_titlebar() turns it off again if Windows won't do it.
+        self.mica = winutil.mica_supported() and QGuiApplication.platformName() == "windows"
+        if self.mica:
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+            self.setProperty("mica", True)
         self.switches = {}
         self.sliders = {}
         self.out_rows = {}
@@ -224,12 +254,14 @@ class SettingsWindow(QWidget):
 
         side = QFrame()
         side.setObjectName("sidebar")
+        side.setProperty("mica", self.mica)
+        self.side = side
         side.setFixedWidth(230)
         sl = QVBoxLayout(side)
         sl.setContentsMargins(0, 18, 0, 16)
         sl.setSpacing(2)
         head = QHBoxLayout()
-        head.setContentsMargins(20, 0, 12, 16)
+        head.setContentsMargins(20, 0, 12, 12)
         head.setSpacing(10)
         icon = QLabel()
         icon.setPixmap(ctrl.icon.pixmap(40, 40))
@@ -245,16 +277,32 @@ class SettingsWindow(QWidget):
         head.addLayout(tv, 1)
         sl.addLayout(head)
 
+        self.search = QLineEdit()
+        self.search.setObjectName("search")
+        self.search.setPlaceholderText("Search")
+        self.search.setClearButtonEnabled(True)
+        self.search.setAccessibleName("Search settings")
+        self.search.textChanged.connect(self.run_search)
+        self.search.installEventFilter(self)
+        box = QHBoxLayout()
+        box.setContentsMargins(12, 0, 12, 10)
+        box.addWidget(self.search)
+        sl.addLayout(box)
+
         self.stack = QStackedWidget()
-        builders = [self.page_general, self.page_audio, self.page_notification, self.page_clipping,
-                    self.page_detection, self.page_history]
-        self.nav = []
-        for i, ((title, glyph, color), build) in enumerate(zip(PAGES, builders)):
-            item = NavItem(title, glyph, color)
-            item.clicked.connect(lambda i=i: self.select(i))
-            sl.addWidget(item)
-            self.nav.append(item)
+        self.stack.setObjectName("content")         # opaque, so only the sidebar shows the backdrop
+        builders = [self.page_general, self.page_games, self.page_audio, self.page_detection, self.page_clipping,
+                    self.page_shortcuts, self.page_notification, self.page_history]
+        for build in builders:
             self.stack.addWidget(build())
+        self.nav = NavList(PAGES)
+        self.nav.chosen.connect(self.select)
+        sl.addWidget(self.nav)
+        self.results = ResultList()
+        self.results.opened.connect(self.open_result)
+        self.results.hide()
+        sl.addWidget(self.results)
+        self.found = []                 # what the results list is showing: [(page index, Row or None)]
         sl.addStretch(1)
         ver = QLabel(f"Version {VERSION}")
         ver.setObjectName("secondary")
@@ -263,8 +311,15 @@ class SettingsWindow(QWidget):
 
         outer.addWidget(side)
         outer.addWidget(self.stack, 1)
+        self.fade = PageFade(self.stack)
         self.select(0, animate=False)
         self.update_status()
+
+        for n in range(len(PAGES)):
+            QShortcut(QKeySequence(f"Ctrl+{n + 1}"), self, lambda n=n: self.select(n))
+        QShortcut(QKeySequence.StandardKey.Find, self, self.focus_search)
+        QApplication.instance().focusChanged.connect(self.follow_focus)
+        self.tab_only()
 
         ctrl.changed.connect(self.on_setting_changed)
         ctrl.devices_changed.connect(self.build_devices)
@@ -280,8 +335,7 @@ class SettingsWindow(QWidget):
 
         self.live = QTimer(self)
         self.live.setInterval(40)
-        self.live.timeout.connect(self.refresh_live)
-        self.live.start()
+        self.live.timeout.connect(self.refresh_live)      # started in showEvent: nothing ticks while hidden
 
     # ---------------------------------------------------------- helpers
     def switch(self, key):
@@ -308,23 +362,92 @@ class SettingsWindow(QWidget):
         return group.add(Row(title, sub, sl, val))
 
     def select(self, i, animate=True):
-        for j, n in enumerate(self.nav):
-            n.set_selected(j == i)
-        if animate and self.stack.currentIndex() == i:
+        """Show page i. It rises a little and fades in (see widgets.PageFade)."""
+        i = int(clamp(i, 0, self.stack.count() - 1))
+        self.nav.set_index(i, animate)
+        if self.stack.currentIndex() == i and animate:
             return
         self.stack.setCurrentIndex(i)
-        if animate:
-            w = self.stack.currentWidget()
-            eff = QGraphicsOpacityEffect(w)
-            w.setGraphicsEffect(eff)
-            a = QPropertyAnimation(eff, b"opacity", self)
-            a.setDuration(200)
-            a.setStartValue(0.0)
-            a.setEndValue(1.0)
-            a.setEasingCurve(QEasingCurve.Type.OutCubic)
-            a.finished.connect(lambda: w.setGraphicsEffect(None))
-            a.start()
-            self._page_anim = a
+        self.fade.start(animate and self.isVisible())
+
+    def tab_only(self):
+        """Buttons take keyboard focus from Tab but not from a click, so the focus ring only shows when
+        you're using the keyboard. Called again after rows are rebuilt."""
+        for b in self.findChildren(QPushButton):
+            b.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+
+    def follow_focus(self, _old, new):
+        """Tabbing to a control further down the page scrolls it into view."""
+        page = self.stack.currentWidget()
+        if new is not None and page is not None and page.isAncestorOf(new):
+            page.ensureWidgetVisible(new, 20, 70)
+
+    # ---------------------------------------------------------- search
+    def focus_search(self):
+        self.search.setFocus(Qt.FocusReason.ShortcutFocusReason)
+        self.search.selectAll()
+
+    def search_index(self):
+        """Everything you can search for: each page, and each setting's row (not the clips in History)."""
+        entries = []
+        for i, (title, _, _) in enumerate(PAGES):
+            entries.append((title, "", title, i, None))
+            if title == "History":
+                continue
+            for row in self.stack.widget(i).findChildren(Row):
+                if row.title.text() and not row.isHidden():
+                    entries.append((row.title.text(), row.sub.text(), title, i, row))
+        return entries
+
+    def run_search(self, text):
+        words = text.lower().split()
+        self.nav.setVisible(not words)
+        self.results.setVisible(bool(words))
+        if not words:
+            self.found = []
+            return
+        hits = []
+        for title, detail, page, i, row in self.search_index():
+            name = title.lower()
+            if all(w in f"{name} {detail.lower()} {page.lower()}" for w in words):
+                # best first: the name starts with it, then the name has it, then only the description does
+                rank = 0 if name.startswith(words[0]) else 1 if all(w in name for w in words) else 2
+                hits.append((rank, len(hits), title, page, i, row))
+        hits.sort(key=lambda h: h[:2])
+        hits = hits[:8]
+        self.found = [(i, row) for _, _, _, _, i, row in hits]
+        self.results.set_entries([(title, page if row is not None else "Page") for _, _, title, page, _, row in hits])
+
+    def open_result(self, n):
+        if not 0 <= n < len(self.found):
+            return
+        i, row = self.found[n]
+        self.search.clear()
+        self.select(i)
+        if row is not None:
+            page = self.stack.widget(i)
+
+            def show():
+                try:
+                    page.ensureWidgetVisible(row, 20, 120)
+                    row.flash()
+                except RuntimeError:
+                    pass                    # the row was rebuilt in the meantime
+            QTimer.singleShot(60, show)
+
+    def eventFilter(self, obj, e):
+        if obj is self.search and e.type() == e.Type.KeyPress:
+            k = e.key()
+            if k in (Qt.Key.Key_Down, Qt.Key.Key_Up) and not self.results.isHidden():
+                self.results.step(1 if k == Qt.Key.Key_Down else -1)
+                return True
+            if k in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not self.results.isHidden():
+                self.open_result(self.results.current)
+                return True
+            if k == Qt.Key.Key_Escape and self.search.text():
+                self.search.clear()
+                return True
+        return super().eventFilter(obj, e)
 
     # ---------------------------------------------------------- pages
     def page_general(self):
@@ -339,29 +462,6 @@ class SettingsWindow(QWidget):
         self.medal_row.layout().insertWidget(0, WarningBadge(), 0, Qt.AlignmentFlag.AlignVCenter)
         self.medal_row.setVisible(not self.ctrl.medal_ok)
         self.run_row = g.add(Row("Laugh detection", "", self.switch("running")))
-        self.pause_keycap = KeyCap("")
-        self.pause_keycap.clicked.connect(self.record_pause_key)
-        self.pause_clear = QPushButton("Remove")
-        self.pause_clear.setObjectName("small")
-        self.pause_clear.clicked.connect(lambda: self.ctrl.set("pause_hotkey", ""))
-        self.pause_row = g.add(Row("Pause hotkey", "", self.pause_clear, self.pause_keycap))
-        self.update_pause_row()
-        g = p.section("Games")
-        self.game_row = g.add(Row("Only listen while playing", "", self.switch("game_only")))
-        self.fullscreen_row = g.add(Row("Count any full-screen app as a game",
-                                        "Catches most games without adding them. Full-screen videos count too.",
-                                        self.switch("fullscreen_games")))
-        self.autoadd_row = g.add(Row("Add games automatically",
-                                     "Adds Steam, Epic, Xbox, Riot, EA, Ubisoft and GOG games when you play them.",
-                                     self.switch("auto_add_games")))
-        self.add_game_btn = QPushButton("Add Game…")
-        self.add_game_btn.setObjectName("small")
-        self.add_game_btn.clicked.connect(self.show_game_menu)
-        self.games_group = p.section("Your games", header_widget=self.add_game_btn,
-                                     footer="Detection pauses when none of these is the window in front, so "
-                                            "videos and music between games don't set it off. It keeps "
-                                            "listening for a few seconds after you alt-tab.")
-        self.build_games()
         g = p.section(footer="When the window is closed, Laugh Clipper keeps running in the system tray.")
         self.startup_sw = Switch(winutil.startup_enabled())
         self.startup_sw.toggled.connect(winutil.set_startup)
@@ -415,11 +515,65 @@ class SettingsWindow(QWidget):
             row = g.add(Row(text))
             row.title.setWordWrap(True)
             row.layout().insertWidget(0, WarningBadge(), 0, Qt.AlignmentFlag.AlignVCenter)
+        self.tab_only()
 
     def copy_diagnostics(self):
         QGuiApplication.clipboard().setText(self.ctrl.diagnostics())
         self.copy_diag.setText("Copied")
         QTimer.singleShot(1600, lambda: self.copy_diag.setText("Copy Diagnostics"))
+
+    def page_games(self):
+        p = Page("Games")
+        g = p.section()
+        self.game_row = g.add(Row("Only listen while playing", "", self.switch("game_only")))
+        self.fullscreen_row = g.add(Row("Count any full-screen app as a game",
+                                        "Catches most games without adding them. Full-screen videos count too.",
+                                        self.switch("fullscreen_games")))
+        self.autoadd_row = g.add(Row("Add games automatically",
+                                     "Adds Steam, Epic, Xbox, Riot, EA, Ubisoft and GOG games when you play them.",
+                                     self.switch("auto_add_games")))
+        self.add_game_btn = QPushButton("Add Game…")
+        self.add_game_btn.setObjectName("small")
+        self.add_game_btn.clicked.connect(self.show_game_menu)
+        self.games_group = p.section("Your games", header_widget=self.add_game_btn,
+                                     footer="Detection pauses when none of these is the window in front, so "
+                                            "videos and music between games don't set it off. It keeps "
+                                            "listening for a few seconds after you alt-tab.")
+        self.build_games()
+        return p.finish()
+
+    def page_shortcuts(self):
+        p = Page("Shortcuts")
+        g = p.section("Keyboard")
+        self.pause_keycap = KeyCap("")
+        self.pause_keycap.clicked.connect(self.record_pause_key)
+        self.pause_clear = QPushButton("Remove")
+        self.pause_clear.setObjectName("small")
+        self.pause_clear.clicked.connect(lambda: self.ctrl.set("pause_hotkey", ""))
+        self.pause_row = g.add(Row("Pause hotkey", "", self.pause_clear, self.pause_keycap))
+        self.update_pause_row()
+
+        g = p.section("Voice commands", footer="Uses a small speech model on your PC, so nothing you say "
+                                               "leaves it. Hype phrases need to be said on their own, not in "
+                                               "the middle of a sentence.")
+        self.voice_row = g.add(Row("Cancel with your voice", "", self.switch("voice_cancel")))
+        self.hype_row = g.add(Row("Clip with hype phrases", "", self.switch("hype_phrases")))
+        self.update_voice_row()
+
+        g = p.section("Controller or wheel", footer="Works with Xbox and PlayStation controllers, racing wheels "
+                                                    "and button boxes, even while the game is in front. Pick a "
+                                                    "button the game doesn't use much.")
+        self.pad_keycap = KeyCap("")
+        self.pad_keycap.clicked.connect(self.capture_pad)
+        self.pad_clear = QPushButton("Remove")
+        self.pad_clear.setObjectName("small")
+        self.pad_clear.clicked.connect(lambda: self.ctrl.set("pad_button", {}))
+        self.pad_row = g.add(Row("Clip button", "", self.pad_clear, self.pad_keycap))
+        self.pad_mode = Segmented(PAD_MODES, 0 if S["pad_mode"] == "popup" else 1)
+        self.pad_mode.changed.connect(lambda i: self.ctrl.set("pad_mode", ("popup", "always")[i]))
+        self.pad_mode_row = g.add(Row("Works", None, self.pad_mode))
+        self.update_pad_rows()
+        return p.finish()
 
     def page_audio(self):
         p = Page("Audio")
@@ -543,27 +697,6 @@ class SettingsWindow(QWidget):
                                         "clip length.", "long_laugh", 3, 30, 1, secs)
         self.length_warn = g.add(Row("The start of a moment could get cut off", ""))
         self.length_warn.layout().insertWidget(0, WarningBadge(), 0, Qt.AlignmentFlag.AlignVCenter)
-
-        g = p.section("Voice commands", footer="Uses a small speech model on your PC, so nothing you say "
-                                               "leaves it. Hype phrases need to be said on their own, not in "
-                                               "the middle of a sentence.")
-        self.voice_row = g.add(Row("Cancel with your voice", "", self.switch("voice_cancel")))
-        self.hype_row = g.add(Row("Clip with hype phrases", "", self.switch("hype_phrases")))
-        self.update_voice_row()
-
-        g = p.section("Controller or wheel", footer="Works with Xbox and PlayStation controllers, racing wheels "
-                                                    "and button boxes, even while the game is in front. Pick a "
-                                                    "button the game doesn't use much.")
-        self.pad_keycap = KeyCap("")
-        self.pad_keycap.clicked.connect(self.capture_pad)
-        self.pad_clear = QPushButton("Remove")
-        self.pad_clear.setObjectName("small")
-        self.pad_clear.clicked.connect(lambda: self.ctrl.set("pad_button", {}))
-        self.pad_row = g.add(Row("Clip button", "", self.pad_clear, self.pad_keycap))
-        self.pad_mode = Segmented(PAD_MODES, 0 if S["pad_mode"] == "popup" else 1)
-        self.pad_mode.changed.connect(lambda i: self.ctrl.set("pad_mode", ("popup", "always")[i]))
-        self.pad_mode_row = g.add(Row("Works", None, self.pad_mode))
-        self.update_pad_rows()
 
         g = p.section("Clip check", footer="After the hotkey, Laugh Clipper looks for the new clip in Medal's "
                                            "folder, so the popup only says “Clip saved” when it really was.")
@@ -747,15 +880,31 @@ class SettingsWindow(QWidget):
 
     def page_history(self):
         p = Page("History")
-        clear = QPushButton("Clear")
-        clear.setObjectName("small")
-        clear.clicked.connect(self.clear_history)
         g = p.section()
         self.stats_bar = StatsBar()
         g.add(self.stats_bar)
-        self.history_group = p.section("Recent clips", header_widget=clear,
-                                       footer="Clips that Laugh Clipper saved for you, newest first. Clearing the "
-                                              "list doesn't delete any clips from Medal.")
+        self.history_filter = Segmented(HISTORY_FILTERS, 0)
+        self.history_filter.setAccessibleName("Show")
+        self.history_filter.changed.connect(lambda _: self.build_history())
+        clear = QPushButton("Clear")
+        clear.setObjectName("small")
+        clear.clicked.connect(self.clear_history)
+        bar = QHBoxLayout()
+        bar.setContentsMargins(2, 0, 2, 6)
+        bar.addWidget(self.history_filter)
+        bar.addStretch(1)
+        bar.addWidget(clear)
+        p.lay.addLayout(bar)
+        self.history_box = QVBoxLayout()            # a heading and a group per day, rebuilt by build_history
+        self.history_box.setSpacing(6)
+        p.lay.addLayout(self.history_box)
+        self.history_rows = []
+        foot = QLabel("Clips that Laugh Clipper saved for you, newest first. Clearing the list doesn't delete any "
+                      "clips from Medal.")
+        foot.setObjectName("footer")
+        foot.setWordWrap(True)
+        foot.setContentsMargins(8, 4, 8, 10)
+        p.lay.addWidget(foot)
         self.build_history()
         return p.finish()
 
@@ -798,39 +947,75 @@ class SettingsWindow(QWidget):
             (f"{st['best']:.2f}" if st["best"] else "–", "Best laugh score"),
             (str(st["not_funny"]), "Not funny"),
         ])
-        g = self.history_group
-        g.clear()
-        items = list(reversed(self.ctrl.history))[:100]
+        while self.history_box.count():             # throw the old day groups away
+            w = self.history_box.takeAt(0).widget()
+            if w is not None:
+                w.hide()
+                w.deleteLater()
+        self.history_rows = []
+        show = self.history_filter.index
+        items = [it for it in reversed(self.ctrl.history)
+                 if show == 0 or (show == 1 and it.get("status") in KEPT)
+                 or (show == 2 and it.get("status") == "failed") or (show == 3 and it.get("status") == "not_funny")]
+        items = items[:100]
         if not items:
-            g.add(Row("No clips yet", "Clips Laugh Clipper saves for you will show up here."))
+            g = Group()
+            g.add(Row("No clips yet", "Clips Laugh Clipper saves for you will show up here.") if show == 0 else
+                  Row(f"Nothing under \u201c{HISTORY_FILTERS[show]}\u201d"))
+            self.history_box.addWidget(g)
+        day, g = None, None
         for it in items:
-            name = sound_names(it.get("sound"))[0]
-            title = f"{name}  ·  {it['game']}" if it.get("game") else name
-            score = it.get("score") or 0
-            sub = "  ·  ".join(x for x in (when(it["time"]), it.get("source", ""),
-                                           f"{it['length']} s clip" if it.get("length") else "",
-                                           f"score {score:.2f}" if score else "",
-                                           "auto-saved" if it.get("auto") else "")
-                               if x)
-            status = it.get("status")
-            pill = {"saved": StatusPill("Saved", "green"), "failed": StatusPill("Didn't save", "orange"),
-                    "bookmarked": StatusPill("Bookmarked", "accent"),
-                    "not_funny": StatusPill("Not funny", "secondary")}.get(status, StatusPill("Not checked",
-                                                                                           "secondary"))
-            right = [pill]
-            if status == "saved" and it.get("file") and Path(it["file"]).exists():
-                play = QPushButton("Play")
-                play.setObjectName("small")
-                play.setToolTip("Open the clip in your video player")
-                play.clicked.connect(lambda _=False, f=it["file"]: winutil.open_file(f))
-                right.append(play)
-                show = QPushButton("Show")
-                show.setObjectName("small")
-                show.setToolTip(it["file"])
-                show.clicked.connect(lambda _=False, f=it["file"]: winutil.reveal(f))
-                right.append(show)
-            g.add(Row(title, sub, *right))
-        g.update()
+            if day_name(it["time"]) != day:
+                day = day_name(it["time"])
+                head = QLabel(day)
+                head.setObjectName("header")
+                head.setContentsMargins(8, 8, 2, 0)
+                self.history_box.addWidget(head)
+                g = Group()
+                self.history_box.addWidget(g)
+            row = g.add(self.history_row(it))
+            self.history_rows.append(row)
+        self.tab_only()
+
+    def history_row(self, it):
+        name = sound_names(it.get("sound"))[0]
+        title = f"{name}  ·  {it['game']}" if it.get("game") else name
+        score = it.get("score") or 0
+        status = it.get("status")
+        sub = "  ·  ".join(x for x in (clock(it["time"]), it.get("source", ""),
+                                       f"{it['length']} s clip" if it.get("length") else "",
+                                       f"score {score:.2f}" if score else "",
+                                       "auto-saved" if it.get("auto") else "")
+                           if x)
+        pill = {"saved": StatusPill("Saved", "green"), "failed": StatusPill("Didn't save", "orange"),
+                "bookmarked": StatusPill("Bookmarked", "accent"),
+                "not_funny": StatusPill("Not funny", "secondary")}.get(status, StatusPill("Not checked", "secondary"))
+        right = [pill]
+        has_file = status == "saved" and it.get("file") and Path(it["file"]).exists()
+        if has_file:
+            play = QPushButton("Play")
+            play.setObjectName("small")
+            play.setToolTip("Open the clip in your video player")
+            play.clicked.connect(lambda _=False, f=it["file"]: winutil.open_file(f))
+            right.append(play)
+            show = QPushButton("Show")
+            show.setObjectName("small")
+            show.setToolTip(it["file"])
+            show.clicked.connect(lambda _=False, f=it["file"]: winutil.reveal(f))
+            right.append(show)
+        elif status == "failed":
+            sub += ("\nThe game was running as administrator, which blocks the clip hotkey."
+                    if it.get("why") == "admin" else
+                    "\nMedal didn't make a clip. Check the hotkey on the Clipping page matches Medal's.")
+            test = QPushButton("Test Clip")
+            test.setObjectName("small")
+            test.setToolTip("Presses Medal's clip hotkey for real and checks the clip turns up")
+            test.clicked.connect(self.ctrl.test_clip)
+            right.append(test)
+        row = Row(title, sub, *right)
+        if has_file:
+            row.layout().insertWidget(0, Thumb(it["file"], row), 0, Qt.AlignmentFlag.AlignVCenter)
+        return row
 
     # ---------------------------------------------------------- games
     def build_games(self):
@@ -844,6 +1029,7 @@ class SettingsWindow(QWidget):
             self.games_group.add(Row(game["name"], game["exe"], rm))
         self.games_group.update()
         self.update_game_rows()
+        self.tab_only()
 
     def show_game_menu(self):
         menu = QMenu(self)
@@ -1157,12 +1343,28 @@ class SettingsWindow(QWidget):
 
     def apply_titlebar(self):
         winutil.style_titlebar(int(self.winId()), T.dark, T.p["window"], T.p["text"])
+        if self.mica and not winutil.apply_mica(int(self.winId()), T.dark):
+            self.mica = False                       # Windows said no: paint the sidebar ourselves again
+            for w in (self, self.side):
+                w.setProperty("mica", False)
+                w.style().unpolish(w)
+                w.style().polish(w)
 
     def showEvent(self, e):
         super().showEvent(e)
+        self.live.start()
+        self.setFocus(Qt.FocusReason.OtherFocusReason)      # nothing looks focused until Tab is pressed
         self.apply_titlebar()
         self.startup_sw.set_silent(winutil.startup_enabled())
         self.update_medal_keys()          # Medal's hotkeys may have changed while we were hidden
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        self.live.stop()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self.fade.place()
 
     def closeEvent(self, e):
         e.ignore()

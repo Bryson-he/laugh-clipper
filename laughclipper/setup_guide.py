@@ -1,15 +1,15 @@
 """First-run setup guide: Medal's hotkey, what to listen to, and a quick laugh to set the trigger level."""
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QPainter
-from PySide6.QtWidgets import (QGraphicsOpacityEffect, QHBoxLayout, QLabel, QPushButton, QStackedWidget, QVBoxLayout,
+from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QStackedWidget, QVBoxLayout,
                                QWidget)
 
 from . import medal, winutil
 from .config import S, hotkey_label
 from .engine import short_name
 from .theme import T
-from .widgets import AA, NO_PEN, AnimDriver, Group, KeyCap, LevelMeter, Row, StatusPill, Switch, blend, loudness
+from .widgets import AA, NO_PEN, AnimDriver, Group, KeyCap, LevelMeter, PageFade, Row, StatusPill, Switch, blend, loudness
 
 
 class StepDots(QWidget):
@@ -209,18 +209,9 @@ class SetupGuide(QWidget):
             self.fill_hotkey_from_medal()
         if i == 3:
             self.reset_peak()
-        if animate:
-            w = self.stack.currentWidget()
-            eff = QGraphicsOpacityEffect(w)
-            w.setGraphicsEffect(eff)
-            a = QPropertyAnimation(eff, b"opacity", self)
-            a.setDuration(220)
-            a.setStartValue(0.0)
-            a.setEndValue(1.0)
-            a.setEasingCurve(QEasingCurve.Type.OutCubic)
-            a.finished.connect(lambda: w.setGraphicsEffect(None))
-            a.start()
-            self._fade = a
+        if getattr(self, "fade", None) is None:
+            self.fade = PageFade(self.stack)
+        self.fade.start(animate)
 
     def next_clicked(self):
         i = self.stack.currentIndex()

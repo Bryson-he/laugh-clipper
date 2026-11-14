@@ -11,7 +11,7 @@ from . import winutil
 from .config import split_position
 from .engine import sound_names
 from .theme import T
-from .widgets import Spring, clamp
+from .widgets import MOTION, Spring, clamp
 
 M = 34                      # transparent margin around the capsule for the shadow
 W_FULL, H_FULL = 440, 76
@@ -98,7 +98,8 @@ class Toast(QWidget):
         self.clock.start()
         self.timer = QTimer(self)
         self.timer.setTimerType(Qt.TimerType.PreciseTimer)
-        self.timer.setInterval(16)
+        self.timer.setInterval(MOTION.for_screen(screen))      # a frame per refresh of the monitor it's on
+        self.reduced = MOTION.is_reduced()                      # Windows' "Animation effects" is off: only fade
         self.timer.timeout.connect(self.tick)
         self.timer.start()
 
@@ -180,6 +181,20 @@ class Toast(QWidget):
         self.laughing = laughing
         self.wave.target = clamp(max(level, 0.35)) if laughing else 0.0
 
+    def adopt(self, old):
+        """Take over from the popup already on screen, so it looks like that one turning into this one:
+        start at its size, fully visible, and only fade the new words in. False if it can't (the old one is
+        somewhere else, or already on its way out)."""
+        if old.closing or old.alpha.value < 0.6 or old.pos() != self.pos() or old.size() != self.size():
+            return False
+        for mine, theirs in ((self.w, old.w), (self.h, old.h)):
+            mine.value, mine.velocity = theirs.value, theirs.velocity
+        self.alpha.snap(1.0)
+        self.slide.snap(0.0)
+        self.swap.snap(0.0)
+        self.swap.target = 1.0
+        return True
+
     def dismiss(self):
         if self.closing:
             return
@@ -198,6 +213,10 @@ class Toast(QWidget):
         self.t += dt
         for s in self.springs:
             s.step(dt)
+        if self.reduced:
+            for s in self.springs:
+                if s is not self.alpha:
+                    s.snap()
         if not self.closing and not self.hover:
             if self.mode in ("ask", "nomedal", "failed"):
                 self.left -= dt

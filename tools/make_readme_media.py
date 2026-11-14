@@ -43,7 +43,7 @@ from laughclipper import app as appmod, config, medal, settings_window, theme, t
 from laughclipper.config import S  # noqa: E402
 from laughclipper.theme import T  # noqa: E402
 
-VERSION = "2.1.1"
+VERSION = "2.2.0"
 MICS = ["Wave:3 Mic (Elgato Wave:3)", "Headset Microphone (Arctis Nova Pro Wireless)"]
 SPEAKERS = ["Game (Elgato Virtual Audio)", "Voice Chat (Elgato Virtual Audio)", "Browser (Elgato Virtual Audio)",
             "Music (Elgato Virtual Audio)", "System (Elgato Virtual Audio)"]
@@ -213,7 +213,24 @@ def settle_meters(w):
         m.update()
 
 
+def fake_thumbnails():
+    """Stand-ins for the clip thumbnails Windows would give: a soft gradient per clip."""
+    from PySide6.QtGui import QImage, QLinearGradient
+    from laughclipper.widgets import THUMBS
+    tints = [("#2b4fd6", "#9b3fc6"), ("#0f9b8e", "#2b4fd6"), ("#d6532b", "#c63f8a"), ("#3f6fc6", "#19c6a0")]
+    for n, entry in enumerate(e for e in ctrl.history if e["file"]):
+        img = QImage(192, 108, QImage.Format.Format_RGB32)
+        p = QPainter(img)
+        g = QLinearGradient(0, 0, 192, 108)
+        g.setColorAt(0, QColor(tints[n % len(tints)][0]))
+        g.setColorAt(1, QColor(tints[n % len(tints)][1]))
+        p.fillRect(img.rect(), g)
+        p.end()
+        THUMBS.images[entry["file"]] = img
+
+
 def window_shots():
+    fake_thumbnails()
     w = settings_window.SettingsWindow(ctrl)
     w.build_devices(MICS, SPEAKERS, SPEAKERS[0])
     more, panel, _ = w.sound_opts["cheering"]          # show off the per-sound options
@@ -234,6 +251,9 @@ def window_shots():
                 w.refresh_live()
                 app.processEvents()
             settle_meters(w)
+            w.stats_bar.count.snap(1.0)                # (it counts up when the page appears)
+            if w.focusWidget():
+                w.focusWidget().clearFocus()
             shot = framed(w.grab().toImage())
             name = f"settings-{title.lower()}-{'dark' if dark else 'light'}.png"
             save_png(shot, name)

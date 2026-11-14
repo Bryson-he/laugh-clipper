@@ -71,8 +71,8 @@ YouTube video between matches won't clip anything.
 
 <div align="center">
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-general-dark.png">
-  <img src="docs/images/settings-general-light.png" width="720" alt="General settings with the Games section">
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-games-dark.png">
+  <img src="docs/images/settings-games-light.png" width="720" alt="Games settings: only listen while playing, and your games">
 </picture>
 </div>
 
@@ -138,9 +138,10 @@ After pressing Medal's hotkey, Laugh Clipper watches Medal's clips folder and on
 clip is actually there. If Medal didn't make one (say the hotkey doesn't match), it tells you instead of pretending.
 And if Medal isn't running at all, it warns you before you need it, with an **Open Medal** button.
 
-Every clip goes into the **History** page: what was heard, where, in which game, and whether it saved, with
-buttons to **Play** it or show it in its folder. Stats along the top show how many clips you've saved, this week's
-count, your most clipped game and your best laugh.
+Every clip goes into the **History** page, grouped by day with a thumbnail: what was heard, where, in which game,
+and whether it saved, with buttons to **Play** it or show it in its folder. Filter it to just the saved ones, the
+ones that didn't save, or the ones you marked not funny. Stats along the top show how many clips you've saved, this
+week's count, your most clipped game and your best laugh.
 
 <div align="center">
 <picture>
@@ -167,7 +168,10 @@ count, your most clipped game and your best laugh.
 - **Pause hotkey:** pick a key on the General page to pause and resume listening without opening anything.
 - **Tray icon shows what it's doing:** grey when paused, an orange dot when it's waiting for a game or Medal is closed.
 - **Put the popup anywhere:** any corner or edge of any monitor, and choose how long it stays up.
-- **Looks at home on Windows 11:** follows your light or dark mode, with smooth, springy animations.
+- **Looks at home on Windows 11:** follows your light or dark mode, with a translucent sidebar and springy
+  animations that run at your monitor's refresh rate (and switch off with Windows' "Animation effects" setting).
+- **Light on your PC:** it uses almost no CPU while listening, and none while it waits for a game.
+- **Find any setting:** type in the sidebar's search box, or use it all from the keyboard (Tab, arrows, Ctrl+1–8).
 - **Starts with Windows** and lives in the system tray.
 - **Updates itself:** when a new version is out, click **Update and Restart**.
 
@@ -177,12 +181,14 @@ count, your most clipped game and your best laugh.
 
 | | |
 |---|---|
-| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-detection-dark.png"><img src="docs/images/settings-detection-light.png" alt="Detection settings"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-clipping-dark.png"><img src="docs/images/settings-clipping-light.png" alt="Clipping settings"></picture> |
-| **Detection:** what to listen for, and how sensitive it is | **Clipping:** your Medal hotkey and auto-save |
-| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-notification-dark.png"><img src="docs/images/settings-notification-light.png" alt="Notification settings"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-general-dark.png"><img src="docs/images/settings-general-light.png" alt="General settings"></picture> |
-| **Notification:** which monitor, where, and for how long | **General:** games, pause hotkey, startup and updates |
-| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-audio-dark.png"><img src="docs/images/settings-audio-light.png" alt="Audio settings"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-history-dark.png"><img src="docs/images/settings-history-light.png" alt="History"></picture> |
-| **Audio:** your mic and PC audio, with live meters | **History:** every clip, stats, and whether it saved |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-general-dark.png"><img src="docs/images/settings-general-light.png" alt="General settings"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-games-dark.png"><img src="docs/images/settings-games-light.png" alt="Games settings"></picture> |
+| **General:** is everything working, startup and updates | **Games:** only listen while playing, and your games |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-audio-dark.png"><img src="docs/images/settings-audio-light.png" alt="Audio settings"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-detection-dark.png"><img src="docs/images/settings-detection-light.png" alt="Detection settings"></picture> |
+| **Audio:** your mic and PC audio, with live meters | **Detection:** what to listen for, and how sensitive it is |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-clipping-dark.png"><img src="docs/images/settings-clipping-light.png" alt="Clipping settings"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-shortcuts-dark.png"><img src="docs/images/settings-shortcuts-light.png" alt="Shortcuts settings"></picture> |
+| **Clipping:** your Medal hotkey, auto-save and the clip check | **Shortcuts:** pause hotkey, voice commands, controller button |
+| <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-notification-dark.png"><img src="docs/images/settings-notification-light.png" alt="Notification settings"></picture> | <picture><source media="(prefers-color-scheme: dark)" srcset="docs/images/settings-history-dark.png"><img src="docs/images/settings-history-light.png" alt="History"></picture> |
+| **Notification:** which monitor, where, and for how long | **History:** every clip by day, with stats and thumbnails |
 
 </details>
 
@@ -207,7 +213,8 @@ The setup guide walks you through this on first launch (and any time from **Gene
    play through.
 3. **Tune it.** On the **Detection** page, laugh a few times and watch the live score, then set the trigger level a
    little below where it peaks. Or click **Calibrate…** with your game running and let it work it out.
-4. **Try it:** right-click the tray icon → **Show Test Notification**.
+4. **Try it:** right-click the tray icon → **Show Test Notification**, or **General → Test Clip** to save a real
+   clip.
 
 > [!TIP]
 > Medal saves the last *N* seconds when you press the hotkey. Set Medal's clip length longer than Laugh Clipper's

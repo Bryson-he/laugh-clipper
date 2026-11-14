@@ -1,11 +1,15 @@
 """Hand-painted, spring-animated controls in the style of macOS System Settings."""
 
 import math
+import threading
+import time
 
 from PySide6.QtCore import QElapsedTimer, QObject, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFontMetricsF, QLinearGradient, QPainter, QPainterPath, QPen, QPolygonF
-from PySide6.QtWidgets import QAbstractButton, QComboBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtGui import (QColor, QFontMetricsF, QGuiApplication, QLinearGradient, QPainter, QPainterPath, QPen,
+                           QPolygonF)
+from PySide6.QtWidgets import QAbstractButton, QComboBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+from . import winutil
 from .theme import T
 
 AA = QPainter.RenderHint.Antialiasing
@@ -27,6 +31,56 @@ def with_alpha(color, a):
     c = QColor(color)
     c.setAlphaF(clamp(a))
     return c
+
+
+def focus_ring(p, widget, rect, radius):
+    """The keyboard focus mark: a 2 px ring in the text colour (white on dark, near-black on light), like
+    Windows 11's. Controls only take focus from the keyboard (TabFocus), so clicking never shows it."""
+    if not widget.hasFocus():
+        return
+    p.save()
+    p.setOpacity(1.0)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.setPen(QPen(T.c("text"), 2))
+    p.drawRoundedRect(QRectF(rect).adjusted(1, 1, -1, -1), radius, radius)
+    p.restore()
+
+
+# ---------------------------------------------------------------- motion
+class Motion:
+    """What every animation shares: how often to draw a frame (the monitor's refresh rate, so a 144 Hz screen
+    gets 144 frames a second, not 60), and whether Windows' "Animation effects" setting is off, in which case
+    things jump to where they're going instead of moving."""
+
+    def __init__(self):
+        self.reduced = False
+        self.checked = -1e9
+
+    def interval(self, widget=None):
+        """Milliseconds between frames on the screen this widget is on: 16 at 60 Hz, 7 at 144 Hz."""
+        screen = None
+        try:
+            screen = widget.screen() if widget is not None else None
+        except (AttributeError, RuntimeError):
+            pass
+        return self.for_screen(screen or QGuiApplication.primaryScreen())
+
+    @staticmethod
+    def for_screen(screen):
+        hz = screen.refreshRate() if screen else 60.0
+        if not 30 <= hz <= 500:
+            hz = 60.0
+        return max(4, int(1000 / min(hz, 240)))
+
+    def is_reduced(self):
+        now = time.monotonic()
+        if now - self.checked > 3:                  # the setting can change while we run; it's cheap to ask
+            self.checked = now
+            self.reduced = not winutil.animations_enabled()
+        return self.reduced
+
+
+MOTION = Motion()
 
 
 # ---------------------------------------------------------------- springs
@@ -62,7 +116,7 @@ class Spring:
 
 
 class AnimDriver(QObject):
-    """Steps a widget's springs at ~60 fps, only while something is moving."""
+    """Steps a widget's springs once per screen refresh, only while something is moving."""
 
     def __init__(self, owner, on_step=None):
         super().__init__(owner)
@@ -82,7 +136,14 @@ class AnimDriver(QObject):
 
     def to(self, spring, target):
         spring.target = float(target)
+        if MOTION.is_reduced():                     # animations are off in Windows: just be there
+            spring.snap()
+            if self.on_step:
+                self.on_step()
+            self.owner.update()
+            return
         if not self.timer.isActive():
+            self.timer.setInterval(MOTION.interval(self.owner))
             self.clock.start()
             self.timer.start()
 
@@ -108,6 +169,7 @@ class Switch(QAbstractButton):
         self.setCheckable(True)
         self.setChecked(bool(checked))
         self.setCursor(POINTER)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setFixedSize(42, 24)
         self.anim = AnimDriver(self)
         self.knob = self.anim.spring(1.0 if checked else 0.0, 0.32, 0.68)
@@ -146,6 +208,7 @@ class Switch(QAbstractButton):
         p.drawRoundedRect(QRectF(x, 2.7, kw, d), d / 2, d / 2)
         p.setBrush(T.c("knob"))
         p.drawRoundedRect(QRectF(x, 2, kw, d), d / 2, d / 2)
+        focus_ring(p, self, self.rect(), h / 2)
 
 
 class Slider(QWidget):
@@ -159,6 +222,7 @@ class Slider(QWidget):
         self.setFixedHeight(26)
         self.setMinimumWidth(120)
         self.setCursor(POINTER)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.anim = AnimDriver(self)
         self.grow = self.anim.spring(0.0, 0.25, 0.75)
         self.pos = self.anim.spring(self._frac(), 0.2, 1.0)
@@ -205,6 +269,25 @@ class Slider(QWidget):
     def wheelEvent(self, e):
         e.ignore()  # let the page scroll instead
 
+    def keyPressEvent(self, e):
+        """Arrows move one step, Page Up/Down ten, Home/End to the ends."""
+        k = e.key()
+        big = max(self.step * 10, (self.hi - self.lo) / 10)
+        delta = {Qt.Key.Key_Left: -self.step, Qt.Key.Key_Down: -self.step, Qt.Key.Key_Right: self.step,
+                 Qt.Key.Key_Up: self.step, Qt.Key.Key_PageDown: -big, Qt.Key.Key_PageUp: big}.get(k)
+        if delta is not None:
+            v = self._snap(self._value + delta)
+        elif k == Qt.Key.Key_Home:
+            v = self.lo
+        elif k == Qt.Key.Key_End:
+            v = self.hi
+        else:
+            return super().keyPressEvent(e)
+        if v != self._value:
+            self._value = v
+            self.valueChanged.emit(v)
+            self.anim.to(self.pos, self._frac())
+
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(AA)
@@ -224,6 +307,8 @@ class Slider(QWidget):
         p.drawEllipse(QPointF(x, cy + 0.5), r + 0.3, r + 0.3)
         p.setBrush(T.c("knob"))
         p.drawEllipse(QPointF(x, cy), r, r)
+        if self.hasFocus():
+            focus_ring(p, self, QRectF(x - r - 2, cy - r - 2, 2 * r + 4, 2 * r + 4), r + 2)
 
 
 class Segmented(QWidget):
@@ -234,6 +319,7 @@ class Segmented(QWidget):
         super().__init__(parent)
         self.setFixedHeight(28)
         self.setCursor(POINTER)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.anim = AnimDriver(self)
         self.thumb = self.anim.spring(0, 0.36, 0.8)
         self.items, self.index, self.seg_w = [], 0, 64
@@ -249,11 +335,19 @@ class Segmented(QWidget):
         self.update()
 
     def mousePressEvent(self, e):
-        i = int(clamp((e.position().x() - 2) // self.seg_w, 0, len(self.items) - 1))
+        self.choose(int(clamp((e.position().x() - 2) // self.seg_w, 0, len(self.items) - 1)))
+
+    def choose(self, i):
         if i != self.index:
             self.index = i
             self.anim.to(self.thumb, i)
             self.changed.emit(i)
+
+    def keyPressEvent(self, e):
+        step = {Qt.Key.Key_Left: -1, Qt.Key.Key_Up: -1, Qt.Key.Key_Right: 1, Qt.Key.Key_Down: 1}.get(e.key())
+        if step is None:
+            return super().keyPressEvent(e)
+        self.choose(int(clamp(self.index + step, 0, len(self.items) - 1)))
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -272,6 +366,7 @@ class Segmented(QWidget):
             p.setFont(T.font(12, 600 if sel else 500))
             p.setPen(T.c("text") if sel else T.c("secondary"))
             p.drawText(QRectF(2 + i * self.seg_w, 0, self.seg_w, h), Qt.AlignmentFlag.AlignCenter, text)
+        focus_ring(p, self, self.rect(), 8)
 
 
 class PopupButton(QComboBox):
@@ -280,6 +375,7 @@ class PopupButton(QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setCursor(POINTER)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setFixedHeight(28)
         self.setMinimumWidth(240)
         self.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
@@ -313,6 +409,7 @@ class PopupButton(QComboBox):
         tr = QRectF(r.left() + 10, r.top(), r.width() - 40, r.height())
         text = QFontMetricsF(p.font()).elidedText(self.currentText(), Qt.TextElideMode.ElideRight, tr.width())
         p.drawText(tr, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
+        focus_ring(p, self, self.rect(), 7)
 
 
 class KeyCap(QAbstractButton):
@@ -321,6 +418,7 @@ class KeyCap(QAbstractButton):
     def __init__(self, text="", parent=None):
         super().__init__(parent)
         self.setCursor(POINTER)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setFixedHeight(30)
         self.recording = False
         self.set_label(text)
@@ -355,6 +453,7 @@ class KeyCap(QAbstractButton):
         p.setFont(T.font(13, 600))
         p.setPen(T.c("accent") if self.recording else T.c("text"))
         p.drawText(cap, Qt.AlignmentFlag.AlignCenter, self.text())
+        focus_ring(p, self, cap, 7)
 
 
 def loudness(rms):
@@ -436,6 +535,7 @@ class Disclosure(QAbstractButton):
         super().__init__(parent)
         self.setCheckable(True)
         self.setCursor(POINTER)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setFixedSize(28, 28)
         self.anim = AnimDriver(self)
         self.turn = self.anim.spring(0.0, 0.32, 0.82)
@@ -459,6 +559,7 @@ class Disclosure(QAbstractButton):
             p.setPen(NO_PEN)
             p.setBrush(T.c("hover"))
             p.drawEllipse(r)
+        focus_ring(p, self, self.rect(), 14)
         p.translate(r.center())
         p.rotate(90 * self.turn.value)
         p.setPen(QPen(T.c("secondary"), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
@@ -475,6 +576,7 @@ class Chip(QAbstractButton):
         self.setChecked(checked)
         self.setText(text)
         self.setCursor(POINTER)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         fm = QFontMetricsF(T.font(12, 600))
         self.setFixedSize(int(fm.horizontalAdvance(text) + 28), 26)
         self.anim = AnimDriver(self)
@@ -513,6 +615,7 @@ class Chip(QAbstractButton):
         p.setFont(T.font(12, 600))
         p.setPen(blend(T.c("text"), QColor("white"), t))
         p.drawText(r, Qt.AlignmentFlag.AlignCenter, self.text())
+        focus_ring(p, self, self.rect(), 13)
 
 
 class Collapsible(QWidget):
@@ -585,11 +688,34 @@ class StatsBar(QWidget):
         super().__init__(parent)
         self.setFixedHeight(74)
         self.items = []
+        self.anim = AnimDriver(self)
+        self.count = self.anim.spring(1.0, 0.55, 1.0)       # numbers count up from 0 as this goes 0 -> 1
 
     def set_items(self, items):
         """items: [(value text, label)]"""
-        self.items = list(items)
+        items = list(items)
+        changed = items != self.items
+        self.items = items
+        if changed and self.isVisible():
+            self.count.snap(0.0)
+            self.anim.to(self.count, 1.0)
         self.update()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self.count.snap(0.0)
+        self.anim.to(self.count, 1.0)
+
+    def shown(self, value):
+        """The value as it reads partway through counting up ('12' -> '7', '0.71' -> '0.43'); words stay."""
+        t = clamp(self.count.value)
+        if t >= 0.999:
+            return value
+        try:
+            number = float(value)
+        except ValueError:
+            return value
+        return f"{number * t:.2f}" if "." in value else str(round(number * t))
 
     def paintEvent(self, _):
         if not self.items:
@@ -598,6 +724,7 @@ class StatsBar(QWidget):
         p.setRenderHint(AA)
         w = self.width() / len(self.items)
         for n, (value, label) in enumerate(self.items):
+            value = self.shown(value)
             r = QRectF(n * w, 0, w, self.height())
             if n:
                 p.setPen(QPen(T.c("separator"), 1))
@@ -646,6 +773,7 @@ class PositionPicker(QWidget):
         super().__init__(parent)
         self.setFixedSize(236, 156)
         self.setCursor(POINTER)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
         self.setMouseTracking(True)
         self.position = position
         self.hover = None
@@ -660,11 +788,11 @@ class PositionPicker(QWidget):
                 return r, row.index(pos)
         return 2, 1
 
-    def screen(self):
+    def monitor(self):
         return QRectF(18, 12, 200, 114)
 
     def spot(self, r, c):
-        s = self.screen()
+        s = self.monitor()
         return QPointF(s.left() + 34 + c * (s.width() - 68) / 2, s.top() + 16 + r * (s.height() - 32) / 2)
 
     def set_position(self, pos):
@@ -689,16 +817,26 @@ class PositionPicker(QWidget):
         self.update()
 
     def mousePressEvent(self, e):
-        r, c = self._cell(e.position())
+        self.choose(*self._cell(e.position()))
+
+    def choose(self, r, c):
         pos = self.GRID[r][c]
         if pos != self.position:
             self.set_position(pos)
             self.changed.emit(pos)
 
+    def keyPressEvent(self, e):
+        dr, dc = {Qt.Key.Key_Left: (0, -1), Qt.Key.Key_Right: (0, 1), Qt.Key.Key_Up: (-1, 0),
+                  Qt.Key.Key_Down: (1, 0)}.get(e.key(), (None, None))
+        if dr is None:
+            return super().keyPressEvent(e)
+        r, c = self._rc(self.position)
+        self.choose(int(clamp(r + dr, 0, 2)), int(clamp(c + dc, 0, 2)))
+
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(AA)
-        s = self.screen()
+        s = self.monitor()
         bezel = s.adjusted(-6, -6, 6, 6)
         # stand
         p.setPen(NO_PEN)
@@ -741,6 +879,7 @@ class PositionPicker(QWidget):
         p.drawRoundedRect(QRectF(pill.left() + 15, pill.center().y() + 0.9, 15, 2.2), 1.1, 1.1)
         p.setBrush(QColor("#0a84ff"))
         p.drawRoundedRect(QRectF(pill.right() - 12, pill.center().y() - 3, 8, 6), 3, 3)
+        focus_ring(p, self, bezel.adjusted(-3, -3, 3, 3), 13)
 
 
 # ---------------------------------------------------------------- layout pieces
@@ -803,13 +942,35 @@ class Row(QWidget):
         lay.addLayout(col, 1)
         for w in right:
             lay.addWidget(w, 0, Qt.AlignmentFlag.AlignVCenter)
+            # what a screen reader says for the control: the row's title (a button keeps its own words)
+            if isinstance(w, QPushButton):
+                w.setAccessibleDescription(title)
+            elif not w.accessibleName():
+                w.setAccessibleName(title)
+                w.setAccessibleDescription(subtitle or "")
         self.setMinimumHeight(46)
+        self.anim = AnimDriver(self)
+        self.glow = self.anim.spring(0.0, 0.9, 1.0)
 
     def set_sub(self, text):
         text = text or ""
         if self.sub.text() != text:
             self.sub.setText(text)
             self.sub.setVisible(bool(text))
+
+    def flash(self):
+        """Tint the row for a moment, to show where a search result is."""
+        self.glow.snap(1.0)
+        self.update()
+        QTimer.singleShot(500, lambda: self.anim.to(self.glow, 0.0))
+
+    def paintEvent(self, _):
+        if self.glow.value > 0.01:
+            p = QPainter(self)
+            p.setRenderHint(AA)
+            p.setPen(NO_PEN)
+            p.setBrush(with_alpha(T.c("accent"), 0.22 * clamp(self.glow.value)))
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(4, 3, -4, -3), 8, 8)
 
 
 def draw_tile(p, rect, color, glyph, letter):
@@ -833,18 +994,16 @@ def draw_tile(p, rect, color, glyph, letter):
 
 
 class NavItem(QWidget):
+    """One page in the sidebar. NavList draws the highlight behind it and sets `on` (0-1) as it arrives."""
     clicked = Signal()
 
     def __init__(self, text, glyph, color, parent=None):
         super().__init__(parent)
         self.text, self.glyph, self.color = text, glyph, color
-        self.selected = self.hover = False
+        self.on = 0.0
+        self.hover = False
         self.setFixedHeight(34)
         self.setCursor(POINTER)
-
-    def set_selected(self, on):
-        self.selected = on
-        self.update()
 
     def enterEvent(self, e):
         self.hover = True
@@ -861,16 +1020,291 @@ class NavItem(QWidget):
         p = QPainter(self)
         p.setRenderHint(AA)
         r = QRectF(self.rect()).adjusted(10, 1, -10, -1)
-        p.setPen(NO_PEN)
-        if self.selected:
-            p.setBrush(T.c("accent"))
-            p.drawRoundedRect(r, 8, 8)
-        elif self.hover:
+        if self.hover and self.on < 0.5:
+            p.setPen(NO_PEN)
             p.setBrush(T.c("hover"))
             p.drawRoundedRect(r, 8, 8)
         tile = QRectF(r.left() + 6, r.center().y() - 11, 22, 22)
         draw_tile(p, tile, self.color, self.glyph, self.text[0])
         p.setFont(T.font(13, 500))
-        p.setPen(QColor("white") if self.selected else T.c("text"))
+        p.setPen(blend(T.c("text"), QColor("white"), self.on))
         p.drawText(QRectF(tile.right() + 10, r.top(), r.width(), r.height()),
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.text)
+
+
+class NavList(QWidget):
+    """The sidebar's pages. The blue highlight slides from one to the next on a spring; with the keyboard,
+    Tab reaches the list and the arrow keys change page."""
+    chosen = Signal(int)
+
+    def __init__(self, entries, parent=None):
+        super().__init__(parent)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+        self.items = []
+        for i, (text, glyph, color) in enumerate(entries):
+            item = NavItem(text, glyph, color, self)
+            item.clicked.connect(lambda i=i: self.choose(i))
+            lay.addWidget(item)
+            self.items.append(item)
+        self.index = 0
+        self.anim = AnimDriver(self, self._sync)
+        self.pos = self.anim.spring(0.0, 0.3, 0.84)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setAccessibleName("Pages")
+        self._sync()
+
+    def set_index(self, i, animate=True):
+        self.index = int(clamp(i, 0, len(self.items) - 1))
+        if animate:
+            self.anim.to(self.pos, self.index)
+        else:
+            self.pos.snap(self.index)
+            self._sync()
+            self.update()
+
+    def choose(self, i):
+        i = int(clamp(i, 0, len(self.items) - 1))
+        if i != self.index:
+            self.set_index(i)
+        self.chosen.emit(i)
+
+    def _sync(self):
+        for n, item in enumerate(self.items):
+            on = clamp(1 - abs(self.pos.value - n))
+            if on != item.on:
+                item.on = on
+                item.update()
+
+    def keyPressEvent(self, e):
+        k = e.key()
+        if k in (Qt.Key.Key_Up, Qt.Key.Key_Left):
+            self.choose(self.index - 1)
+        elif k in (Qt.Key.Key_Down, Qt.Key.Key_Right):
+            self.choose(self.index + 1)
+        elif k == Qt.Key.Key_Home:
+            self.choose(0)
+        elif k == Qt.Key.Key_End:
+            self.choose(len(self.items) - 1)
+        else:
+            super().keyPressEvent(e)
+
+    def paintEvent(self, _):
+        if not self.items:
+            return
+        p = QPainter(self)
+        p.setRenderHint(AA)
+        v = self.pos.value
+        lo = int(clamp(math.floor(v), 0, len(self.items) - 1))
+        hi = min(lo + 1, len(self.items) - 1)
+        step = (self.items[hi].y() - self.items[lo].y()) or (self.items[lo].height() + 2)
+        y = self.items[lo].y() + (v - lo) * step          # past the ends too, so the spring can overshoot
+        r = QRectF(10, y + 1, self.width() - 20, self.items[lo].height() - 2)
+        p.setPen(NO_PEN)
+        p.setBrush(T.c("accent"))
+        p.drawRoundedRect(r, 8, 8)
+        focus_ring(p, self, r.adjusted(-2, -2, 2, 2), 10)
+
+
+class ResultList(QWidget):
+    """Search results in the sidebar: a setting's name with its page under it."""
+    opened = Signal(int)
+    ROW = 44
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.entries = []           # [(title, page name)]
+        self.current = 0
+        self.hover = -1
+        self.setMouseTracking(True)
+        self.setCursor(POINTER)
+
+    def set_entries(self, entries):
+        self.entries = list(entries)
+        self.current = 0
+        self.setFixedHeight(max(self.ROW, self.ROW * len(self.entries)))
+        self.update()
+
+    def step(self, step):
+        if self.entries:
+            self.current = int(clamp(self.current + step, 0, len(self.entries) - 1))
+            self.update()
+
+    def mouseMoveEvent(self, e):
+        row = int(e.position().y() // self.ROW)
+        if row != self.hover:
+            self.hover = row
+            self.update()
+
+    def leaveEvent(self, e):
+        self.hover = -1
+        self.update()
+
+    def mousePressEvent(self, e):
+        row = int(e.position().y() // self.ROW)
+        if 0 <= row < len(self.entries):
+            self.opened.emit(row)
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(AA)
+        if not self.entries:
+            p.setFont(T.font(12))
+            p.setPen(T.c("secondary"))
+            p.drawText(QRectF(22, 0, self.width() - 32, self.ROW), Qt.AlignmentFlag.AlignVCenter, "No settings found")
+            return
+        for n, (title, page) in enumerate(self.entries):
+            r = QRectF(10, n * self.ROW + 1, self.width() - 20, self.ROW - 2)
+            sel = n == self.current
+            if sel or n == self.hover:
+                p.setPen(NO_PEN)
+                p.setBrush(T.c("accent") if sel else T.c("hover"))
+                p.drawRoundedRect(r, 8, 8)
+            tr = r.adjusted(12, 5, -8, -5)
+            p.setFont(T.font(13, 500))
+            p.setPen(QColor("white") if sel else T.c("text"))
+            fm = QFontMetricsF(p.font())
+            p.drawText(QRectF(tr.left(), tr.top(), tr.width(), 18), Qt.AlignmentFlag.AlignVCenter,
+                       fm.elidedText(title, Qt.TextElideMode.ElideRight, tr.width()))
+            p.setFont(T.font(11))
+            p.setPen(with_alpha(QColor("white"), 0.8) if sel else T.c("secondary"))
+            p.drawText(QRectF(tr.left(), tr.top() + 18, tr.width(), 15), Qt.AlignmentFlag.AlignVCenter, page)
+
+
+class Curtain(QWidget):
+    """Sits over the page area in the window colour and fades away, so a new page fades in without the
+    blurry text an opacity effect gives."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.alpha = 0.0
+        self.hide()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.fillRect(self.rect(), with_alpha(T.c("window"), self.alpha))
+
+
+class PageFade(QObject):
+    """Brings a QStackedWidget's new page in: it rises a few pixels while a Curtain over it fades out.
+    Call start() right after setCurrentIndex(); place() when the stack moves or resizes."""
+    RISE = 14
+
+    def __init__(self, stack):
+        super().__init__(stack)
+        self.stack = stack
+        self.curtain = Curtain(stack.parentWidget())
+        self.anim = AnimDriver(stack, self.step)
+        self.t = self.anim.spring(1.0, 0.32, 1.0)
+
+    def start(self, animate=True):
+        for i in range(self.stack.count()):             # a page interrupted mid-rise goes back where it belongs
+            if i != self.stack.currentIndex():
+                self.stack.widget(i).move(0, 0)
+        if animate and self.stack.isVisible() and not MOTION.is_reduced():
+            self.t.snap(0.0)
+            self.anim.to(self.t, 1.0)
+        else:
+            self.t.snap(1.0)
+        self.step()
+
+    def place(self):
+        self.curtain.setGeometry(self.stack.geometry())
+
+    def step(self):
+        t = clamp(self.t.value)
+        page = self.stack.currentWidget()
+        if page is not None:
+            page.move(0, round((1 - t) * self.RISE))
+        self.curtain.alpha = 1 - t
+        self.place()
+        self.curtain.setVisible(t < 0.995)
+        if self.curtain.isVisible():
+            self.curtain.raise_()
+            self.curtain.update()
+
+
+class ThumbLoader(QObject):
+    """Gets clip thumbnails from Windows on one background thread, and remembers them."""
+    loaded = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.images = {}            # path -> QImage, or None if Windows has no thumbnail for it
+        self.queue = []
+        self.thread = None
+        self.lock = threading.Lock()
+
+    def get(self, path):
+        return self.images.get(path)
+
+    def request(self, path):
+        with self.lock:
+            if path in self.images or path in self.queue:
+                return
+            self.queue.append(path)
+            if self.thread is None or not self.thread.is_alive():
+                self.thread = threading.Thread(target=self._work, daemon=True, name="thumbnails")
+                self.thread.start()
+
+    def _work(self):
+        from PySide6.QtGui import QImage
+        while True:
+            with self.lock:
+                if not self.queue:
+                    return
+                path = self.queue[0]
+            img = None
+            try:
+                got = winutil.thumbnail(path, 192, 108)
+                if got:
+                    w, h, data = got
+                    img = QImage(data, w, h, w * 4, QImage.Format.Format_RGB32).copy()
+            except Exception:
+                img = None
+            with self.lock:
+                self.images[path] = img
+                self.queue.pop(0)
+            self.loaded.emit(path)
+
+
+THUMBS = ThumbLoader()
+
+
+class Thumb(QWidget):
+    """A clip's thumbnail, asked for the first time it's actually drawn (so only for rows you scroll to)."""
+
+    def __init__(self, path, parent=None):
+        super().__init__(parent)
+        self.path = path
+        self.setFixedSize(64, 36)
+        THUMBS.loaded.connect(self._loaded)
+
+    def _loaded(self, path):
+        if path == self.path:
+            self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(AA)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        r = QRectF(self.rect())
+        clip = QPainterPath()
+        clip.addRoundedRect(r, 6, 6)
+        p.setClipPath(clip)
+        p.fillRect(r, T.c("control"))
+        img = THUMBS.get(self.path)
+        if img is None:
+            if self.path not in THUMBS.images:
+                THUMBS.request(self.path)
+            p.setPen(NO_PEN)                           # a little play triangle while it loads / if there's none
+            p.setBrush(T.c("tertiary"))
+            cx, cy = r.center().x(), r.center().y()
+            p.drawPolygon(QPolygonF([QPointF(cx - 4, cy - 6), QPointF(cx + 6, cy), QPointF(cx - 4, cy + 6)]))
+            return
+        # fill the tile, cropping whichever way is needed
+        scale = max(r.width() / img.width(), r.height() / img.height())
+        w, h = img.width() * scale, img.height() * scale
+        p.drawImage(QRectF(r.center().x() - w / 2, r.center().y() - h / 2, w, h), img)

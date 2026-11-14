@@ -31,6 +31,8 @@ def fresh_settings():
     for path in (config.SETTINGS_PATH, config.BACKUP_PATH, config.BAD_PATH):
         path.unlink(missing_ok=True)
     SENT.clear()
+    from laughclipper.widgets import MOTION
+    MOTION.reduced, MOTION.checked = False, float("inf")      # animations on, whatever this PC is set to
     yield
 
 

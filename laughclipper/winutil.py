@@ -367,3 +367,115 @@ def runs_elevated(pid):
             k32.CloseHandle(token)
     finally:
         k32.CloseHandle(proc)
+
+
+def animations_enabled():
+    """Windows' Settings → Accessibility → Visual effects → Animation effects. True when it can't be told."""
+    if not IS_WIN:
+        return True
+    on = wintypes.BOOL(True)
+    try:
+        user32 = ctypes.WinDLL("user32")
+        user32.SystemParametersInfoW.argtypes = [wintypes.UINT, wintypes.UINT, ctypes.c_void_p, wintypes.UINT]
+        if not user32.SystemParametersInfoW(0x1042, 0, ctypes.byref(on), 0):     # SPI_GETCLIENTAREAANIMATION
+            return True
+    except OSError:
+        return True
+    return bool(on.value)
+
+
+def thumbnail(path, width, height):
+    """The thumbnail Windows Explorer would show for a file, as (width, height, BGRA bytes), or None.
+    Slow the first time for a video (Windows decodes a frame), so call it off the UI thread."""
+    if not IS_WIN:
+        return None
+
+    class GUID(ctypes.Structure):
+        _fields_ = [("a", wintypes.DWORD), ("b", wintypes.WORD), ("c", wintypes.WORD), ("d", ctypes.c_ubyte * 8)]
+
+    class SIZE(ctypes.Structure):
+        _fields_ = [("cx", ctypes.c_long), ("cy", ctypes.c_long)]
+
+    class BITMAPINFOHEADER(ctypes.Structure):
+        _fields_ = [("biSize", wintypes.DWORD), ("biWidth", ctypes.c_long), ("biHeight", ctypes.c_long),
+                    ("biPlanes", wintypes.WORD), ("biBitCount", wintypes.WORD), ("biCompression", wintypes.DWORD),
+                    ("biSizeImage", wintypes.DWORD), ("biXPelsPerMeter", ctypes.c_long),
+                    ("biYPelsPerMeter", ctypes.c_long), ("biClrUsed", wintypes.DWORD),
+                    ("biClrImportant", wintypes.DWORD)]
+
+    class BITMAP(ctypes.Structure):
+        _fields_ = [("bmType", ctypes.c_long), ("bmWidth", ctypes.c_long), ("bmHeight", ctypes.c_long),
+                    ("bmWidthBytes", ctypes.c_long), ("bmPlanes", wintypes.WORD), ("bmBitsPixel", wintypes.WORD),
+                    ("bmBits", ctypes.c_void_p)]
+
+    shell32, ole32 = ctypes.WinDLL("shell32"), ctypes.WinDLL("ole32")
+    gdi32, user32 = ctypes.WinDLL("gdi32"), ctypes.WinDLL("user32")
+    ole32.CoInitializeEx(None, 0)
+    # IShellItemImageFactory {bcc18b79-ba16-442f-80c4-8a59c30c463b}
+    iid = GUID(0xbcc18b79, 0xba16, 0x442f, (ctypes.c_ubyte * 8)(0x80, 0xc4, 0x8a, 0x59, 0xc3, 0x0c, 0x46, 0x3b))
+    shell32.SHCreateItemFromParsingName.argtypes = [wintypes.LPCWSTR, ctypes.c_void_p, ctypes.POINTER(GUID),
+                                                    ctypes.POINTER(ctypes.c_void_p)]
+    shell32.SHCreateItemFromParsingName.restype = ctypes.c_long
+    factory = ctypes.c_void_p()
+    if shell32.SHCreateItemFromParsingName(str(path), None, ctypes.byref(iid), ctypes.byref(factory)) or not factory:
+        return None
+    vtable = ctypes.cast(ctypes.cast(factory, ctypes.POINTER(ctypes.c_void_p))[0], ctypes.POINTER(ctypes.c_void_p))
+    get_image = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_void_p, SIZE, ctypes.c_int,
+                                   ctypes.POINTER(wintypes.HBITMAP))(vtable[3])
+    release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtable[2])
+    bitmap = wintypes.HBITMAP()
+    try:
+        if get_image(factory, SIZE(width, height), 0x8, ctypes.byref(bitmap)) or not bitmap:    # SIIGBF_THUMBNAILONLY
+            return None
+    finally:
+        release(factory)
+    gdi32.GetObjectW.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p]
+    gdi32.GetDIBits.argtypes = [wintypes.HDC, wintypes.HBITMAP, wintypes.UINT, wintypes.UINT, ctypes.c_void_p,
+                                ctypes.c_void_p, wintypes.UINT]
+    gdi32.DeleteObject.argtypes = [wintypes.HANDLE]
+    user32.GetDC.restype = wintypes.HDC
+    user32.GetDC.argtypes = [wintypes.HWND]
+    user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]
+    try:
+        bm = BITMAP()
+        if not gdi32.GetObjectW(bitmap, ctypes.sizeof(bm), ctypes.byref(bm)):
+            return None
+        w, h = bm.bmWidth, bm.bmHeight
+        header = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)   # top-down
+        buf = ctypes.create_string_buffer(w * h * 4)
+        dc = user32.GetDC(None)
+        try:
+            if not gdi32.GetDIBits(dc, bitmap, 0, h, buf, ctypes.byref(header), 0):
+                return None
+        finally:
+            user32.ReleaseDC(None, dc)
+        return w, h, buf.raw
+    finally:
+        gdi32.DeleteObject(bitmap)
+
+
+def mica_supported():
+    """Windows 11 22H2 or later, where a window can ask for the Mica backdrop (the wallpaper-tinted material
+    behind Windows 11's own Settings sidebar)."""
+    return IS_WIN and sys.getwindowsversion().build >= 22621
+
+
+def apply_mica(hwnd, dark):
+    """Ask Windows to draw Mica behind the window. It shows wherever the window paints nothing, so the window
+    needs a translucent background. False if Windows said no."""
+    if not mica_supported():
+        return False
+
+    class MARGINS(ctypes.Structure):
+        _fields_ = [(n, ctypes.c_int) for n in ("left", "right", "top", "bottom")]
+    try:
+        dwm = ctypes.WinDLL("dwmapi")
+        dwm.DwmSetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+        dwm.DwmExtendFrameIntoClientArea.argtypes = [wintypes.HWND, ctypes.POINTER(MARGINS)]
+        dwm.DwmSetWindowAttribute.restype = dwm.DwmExtendFrameIntoClientArea.restype = ctypes.c_long
+        if dwm.DwmExtendFrameIntoClientArea(hwnd, ctypes.byref(MARGINS(-1, -1, -1, -1))):
+            return False
+        dwm.DwmSetWindowAttribute(hwnd, 20, ctypes.byref(ctypes.c_int(1 if dark else 0)), 4)    # dark material
+        return dwm.DwmSetWindowAttribute(hwnd, 38, ctypes.byref(ctypes.c_int(2)), 4) == 0        # backdrop: Mica
+    except OSError:
+        return False
