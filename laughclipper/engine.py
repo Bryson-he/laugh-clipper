@@ -23,6 +23,8 @@ SR = 48000
 HOP = 0.25                 # analyse a 1 s window every 0.25 s
 CHUNK = 0.05               # audio is read in 50 ms pieces, so the loudness meter updates 20 times a second
 KEEP_RATIO = 0.55          # once laughing, a score above 55% of the trigger keeps it "still laughing"
+STALL_SECONDS = 8          # a source that hasn't delivered audio for this long is restarted
+DEFAULT_CHECK = 5          # how often (s) a source on "Windows default" checks the default hasn't changed
 GROUP_RATIO = 0.75         # group laughs: each source only needs 75% of its trigger level…
 GROUP_WINDOW = 1.0         # …as long as your mic and another source are both at it within a second of each other
 # sounds you can trigger on: key -> (name, "still ..." text, YAMNet class names)
@@ -35,7 +37,8 @@ SOUNDS = {
     "gasp": ("Gasp", "Still going", {"Gasp"}),
 }
 # things that start a moment without being a YAMNet sound: name, "still ..." text
-OTHER_SOUNDS = {"hype": ("Hype", "Still going"), "button": ("Clip button", "Saving")}
+OTHER_SOUNDS = {"hype": ("Hype", "Still going"), "button": ("Clip button", "Saving"),
+                "test": ("Test clip", "Saving")}
 LABEL_SOUND = {label: key for key, (_, _, labels) in SOUNDS.items() for label in labels}
 MODEL_URL = "https://storage.googleapis.com/mediapipe-models/audio_classifier/yamnet/float32/1/yamnet.tflite"
 
@@ -132,7 +135,16 @@ def model_path():
     return path
 
 
+def _skip_matplotlib():
+    """MediaPipe imports matplotlib for drawing helpers we never use: about 40 MB of memory and half a second
+    at startup. Give it empty stand-ins instead (they're also left out of the built app)."""
+    import types
+    for name in ("matplotlib", "matplotlib.pyplot"):
+        sys.modules.setdefault(name, types.ModuleType(name))
+
+
 def make_classifier():
+    _skip_matplotlib()
     from mediapipe.tasks import python as mp_python
     from mediapipe.tasks.python import audio as mp_audio
     opts = mp_audio.AudioClassifierOptions(
@@ -226,6 +238,8 @@ class Engine(QObject):
         self.scores = {}     # key -> every sound's latest score, e.g. {"laughter": 0.4, "cheering": 0.1}
         self.activity = {}   # key -> last time the score was above the keep-alive level
         self.near = {}       # key -> last time the score was above the group-laugh level
+        self.alive = {}      # key -> last time (monotonic) its thread got audio or tried to start
+        self.broken = {}     # key -> when (time.time()) it started failing; gone again once it works
         self.gated = False   # True while waiting for a game: keep recording, but don't classify
         self.voice = None    # voice.VoiceCommands, fed the mic's audio
 
@@ -243,13 +257,34 @@ class Engine(QObject):
         for key in list(self.threads):
             if key not in wanted:
                 self.threads.pop(key).set()
-                for d in (self.levels, self.sound, self.heard, self.activity, self.volume, self.scores, self.near):
+                for d in (self.levels, self.sound, self.heard, self.activity, self.volume, self.scores, self.near,
+                          self.alive, self.broken):
                     d.pop(key, None)
         for key in wanted - set(self.threads):
             stop = threading.Event()
             self.threads[key] = stop
             threading.Thread(target=self._listen, args=(key, stop), daemon=True,
                              name=f"listen-{key[0]}-{short_name(key[1])}").start()
+
+    def restart_stalled(self):
+        """A recorder can hang without an error (a device vanishing mid-read, sleep/wake). Give any source that
+        has been silent for STALL_SECONDS a new thread; the stuck one is left to die. Returns the keys restarted."""
+        now = time.monotonic()
+        stalled = [k for k in list(self.threads) if now - self.alive.get(k, now) > STALL_SECONDS]
+        for key in stalled:
+            log.warning("[%s] no audio for %d s, restarting it", short_name(key[1]) or "mic", STALL_SECONDS)
+            self.threads.pop(key).set()
+            self.alive.pop(key, None)
+            self.broken.setdefault(key, time.time())
+            self.levels[key] = "error"
+        if stalled:
+            self.sync()
+        return stalled
+
+    def problems(self, after=10):
+        """Sources that have been failing for more than `after` seconds (unplugged, or in use elsewhere)."""
+        now = time.time()
+        return [k for k, t in list(self.broken.items()) if k in self.threads and now - t >= after]
 
     def stop_all(self):
         for stop in self.threads.values():
@@ -299,7 +334,9 @@ class Engine(QObject):
         kind, name = key
         label = short_name(name) or "mic"
         classifier = None
+        last_error = None
         while not stop.is_set():
+            self.alive[key] = time.monotonic()
             try:
                 sc = get_soundcard()
                 if classifier is None:
@@ -314,19 +351,27 @@ class Engine(QObject):
                 if dev is None:
                     raise RuntimeError("device not found")
             except Exception as e:
-                log.warning("[%s] couldn't start: %s %s", label, type(e).__name__, e)
+                error = f"{type(e).__name__} {e}"
+                if error != last_error:              # say it once, not every 3 s while it's unplugged
+                    log.warning("[%s] couldn't start: %s", label, error)
+                    last_error = error
                 if not stop.is_set():
                     self.levels[key] = "error"
+                    self.broken.setdefault(key, time.time())
                 stop.wait(3)
                 continue
 
             log.info("listening on: %s", dev.name)
+            last_error = None
+            follow_default = kind == "mic" and not name
+            checked = time.monotonic()
             window = np.zeros(SR, dtype=np.float32)
             chunk_n = int(SR * CHUNK)
             per_hop = round(HOP / CHUNK)
             chunks = 0
             trigger = TriggerWindow()
             group = TriggerWindow()        # the same, with the lower group-laugh bar
+            near_logged = 0.0
             source = source_id(key)
             try:
                 with dev.recorder(samplerate=SR) as rec:
@@ -336,6 +381,13 @@ class Engine(QObject):
                         mono = (block.mean(axis=1) if block.ndim > 1 else block).astype(np.float32)
                         window = np.concatenate([window[len(mono):], mono])
                         self.volume[key] = float(np.sqrt(np.mean(mono ** 2)))
+                        self.alive[key] = time.monotonic()
+                        self.broken.pop(key, None)
+                        if follow_default and self.alive[key] - checked > DEFAULT_CHECK:
+                            checked = self.alive[key]
+                            if sc.default_microphone().id != dev.id:
+                                log.info("[%s] Windows' default microphone changed", label)
+                                break
                         if kind == "mic" and self.voice is not None:
                             self.voice.feed(mono, self.gated)
                         chunks += 1
@@ -374,6 +426,13 @@ class Engine(QObject):
                             together = group.feed(sound if strength >= GROUP_RATIO else None,
                                                   round(S["min_laugh"] / 2 / HOP))
                             others = self.together(key) if together else []
+                            if together and not others and time.time() - near_logged > 20:
+                                near_logged = time.time()      # for tuning: this source was ready, who wasn't?
+                                rest = ", ".join(f"{short_name(k[1]) or k[0]} {v / max(S['threshold'], 0.01):.2f}"
+                                                 for k, v in list(self.levels.items())
+                                                 if k != key and isinstance(v, float))
+                                log.info("[%s] %s at %.2f, but no group: %s", label, together, strength,
+                                         rest or "no other source")
                             if others:
                                 log.info("[%s] group %s with %s (score %.2f)", label, together,
                                          ", ".join(short_name(k[1]) or k[0] for k in others), score)
@@ -388,4 +447,5 @@ class Engine(QObject):
                 log.warning("[%s] audio stopped: %s %s", label, type(e).__name__, e)
                 if not stop.is_set():
                     self.levels[key] = "error"
+                    self.broken.setdefault(key, time.time())
                 stop.wait(2)

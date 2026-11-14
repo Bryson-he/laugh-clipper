@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 HISTORY_PATH = config.DATA_DIR / "history.json"
 HISTORY_MAX = 500
 CONFIRM_TIMEOUT = 10        # seconds to wait for Medal's file (it usually appears within half a second)
+LATE_TIMEOUT = 30           # after giving up, keep looking this long in case Medal was just slow
 VIDEO_EXTS = (".mp4", ".mkv", ".mov", ".webm")
 
 _found = (0.0, None)        # (when we looked, folder) so we don't scan every drive on every clip
@@ -48,7 +49,10 @@ def new_clips(folder, since):
     """Video files in the folder (or its per-game subfolders) created after `since`."""
     found = []
     try:
-        dirs = [folder] + [Path(e.path) for e in os.scandir(folder) if e.is_dir() and e.stat().st_mtime >= since]
+        # os.stat, not the entry's own stat(): a folder's modified time in its parent's listing lags behind new
+        # files in it on NTFS, which made clips look like they hadn't saved
+        dirs = [folder] + [Path(e.path) for e in os.scandir(folder)
+                           if e.is_dir() and os.stat(e.path).st_mtime >= since - 2]
         for d in dirs:
             for e in os.scandir(d):
                 if e.is_file() and e.name.lower().endswith(VIDEO_EXTS) and e.stat().st_ctime >= since:
@@ -59,9 +63,11 @@ def new_clips(folder, since):
 
 
 class ClipWatcher(QObject):
-    """After the hotkey: polls Medal's folder until a new clip appears, or gives up after a while."""
+    """After the hotkey: polls Medal's folder until a new clip appears, or gives up after a while. After giving
+    up it keeps looking a little longer, and emits `late` if Medal was only slow."""
     found = Signal(str)
     missing = Signal()
+    late = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -70,6 +76,7 @@ class ClipWatcher(QObject):
         self.timer.timeout.connect(self._poll)
         self.folder = None
         self.since = self.deadline = 0.0
+        self.gave_up = False
 
     def active(self):
         return self.timer.isActive()
@@ -78,6 +85,8 @@ class ClipWatcher(QObject):
         self.folder = Path(folder)
         self.since = time.time() - 1.0
         self.deadline = time.time() + CONFIRM_TIMEOUT
+        self.gave_up = False
+        self.timer.setInterval(250)
         self.timer.start()
 
     def stop(self):
@@ -87,9 +96,15 @@ class ClipWatcher(QObject):
         clips = new_clips(self.folder, self.since)
         if clips:
             self.timer.stop()
-            self.found.emit(str(max(clips, key=lambda p: p.stat().st_ctime)))
+            newest = str(max(clips, key=lambda p: p.stat().st_ctime))
+            (self.late if self.gave_up else self.found).emit(newest)
         elif time.time() > self.deadline:
-            self.timer.stop()
+            if self.gave_up:
+                self.timer.stop()
+                return
+            self.gave_up = True
+            self.deadline = time.time() + LATE_TIMEOUT
+            self.timer.setInterval(1000)
             self.missing.emit()
 
 

@@ -8,7 +8,7 @@ from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (QFileDialog, QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QMenu, QMessageBox,
                                QPushButton, QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
-from . import clips, gamepad, medal, sounds, winutil
+from . import clips, config, gamepad, medal, sounds, winutil
 from .config import DEFAULTS, S, clean_games, hotkey_label
 from .engine import SOUNDS, short_name, sound_level, sound_names
 from .theme import T
@@ -270,6 +270,7 @@ class SettingsWindow(QWidget):
         ctrl.devices_changed.connect(self.build_devices)
         ctrl.update_changed.connect(self.on_update)
         ctrl.history_changed.connect(self.build_history)
+        ctrl.history_changed.connect(self.build_health)
         T.changed.connect(self.apply_titlebar)
         QGuiApplication.instance().screenAdded.connect(lambda *_: self.refresh_displays())
         QGuiApplication.instance().screenRemoved.connect(lambda *_: self.refresh_displays())
@@ -328,6 +329,8 @@ class SettingsWindow(QWidget):
     # ---------------------------------------------------------- pages
     def page_general(self):
         p = Page("General")
+        self.health_group = p.section()
+        self.build_health()
         g = p.section()
         open_medal = QPushButton("Open Medal")
         open_medal.setObjectName("prominent")
@@ -377,7 +380,46 @@ class SettingsWindow(QWidget):
         whats_new.setVisible(bool(notes(VERSION)))
         self.upd_row = g.add(Row("Laugh Clipper", f"Version {VERSION}", whats_new, self.upd_btn))
         g.add(Row("Check for updates automatically", None, self.switch("check_updates")))
+        g = p.section("Troubleshooting")
+        open_log = QPushButton("Open Log")
+        open_log.setObjectName("small")
+        open_log.clicked.connect(lambda: winutil.open_file(str(config.LOG_PATH)))
+        self.copy_diag = QPushButton("Copy Diagnostics")
+        self.copy_diag.clicked.connect(self.copy_diagnostics)
+        g.add(Row("Something not working?", "Copies a summary of your setup and recent problems to paste to "
+                                            "whoever's helping. No folders or game names are included.",
+                  open_log, self.copy_diag))
         return p.finish()
+
+    def build_health(self):
+        """The card at the top of General: one line when all is well, plus a row for each thing that isn't."""
+        g = self.health_group
+        g.clear()
+        bad = [(key, text) for key, ok, text in self.ctrl.health() if ok is False]
+        test = QPushButton("Test Clip")
+        test.setToolTip("Presses Medal's clip hotkey for real and checks the clip turns up")
+        test.clicked.connect(self.ctrl.test_clip)
+        test.setEnabled(self.ctrl.medal_ok)
+        if bad:
+            title = "1 thing needs attention" if len(bad) == 1 else f"{len(bad)} things need attention"
+            pill = StatusPill("Check", "orange")
+            sub = "Clips might not save until this is sorted."
+        else:
+            title, pill = "Everything's working", StatusPill("All good", "green")
+            sub = "Medal, your hotkey and your audio all check out. Test Clip saves a real clip to make sure."
+        self.health_row = g.add(Row(title, sub, pill, test))
+        self.health_bad = [key for key, _ in bad]
+        for key, text in bad:
+            if key == "medal":
+                continue                       # it has its own row below, with the Open Medal button
+            row = g.add(Row(text))
+            row.title.setWordWrap(True)
+            row.layout().insertWidget(0, WarningBadge(), 0, Qt.AlignmentFlag.AlignVCenter)
+
+    def copy_diagnostics(self):
+        QGuiApplication.clipboard().setText(self.ctrl.diagnostics())
+        self.copy_diag.setText("Copied")
+        QTimer.singleShot(1600, lambda: self.copy_diag.setText("Copy Diagnostics"))
 
     def page_audio(self):
         p = Page("Audio")
@@ -1032,6 +1074,9 @@ class SettingsWindow(QWidget):
     def on_setting_changed(self, key):
         if key in self.switches:
             self.switches[key].set_silent(S[key])
+        if key in ("medal", "hotkey", "clips_folder", "confirm_clips", "sources", "game", "running", "listen_mic",
+                   "outputs"):
+            self.build_health()
         if key in ("running", "listen_mic", "outputs", "game_only", "game", "medal"):
             self.update_status()
         if key == "game_only":

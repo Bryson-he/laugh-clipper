@@ -14,6 +14,8 @@ FROZEN = getattr(sys, "frozen", False)
 BASE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
 DATA_DIR = Path(os.environ.get("APPDATA") or (Path.home() / ".config")) / APP_NAME
 SETTINGS_PATH = DATA_DIR / "settings.json"
+BACKUP_PATH = DATA_DIR / "settings.backup.json"     # the last settings file that loaded properly
+BAD_PATH = DATA_DIR / "settings.bad.json"           # a damaged settings file, kept in case it's wanted
 LOG_PATH = DATA_DIR / "laugh_clipper.log"
 
 log = logging.getLogger(__name__)
@@ -83,16 +85,26 @@ def load():
     """Load settings. Returns False on first run (no settings file anywhere)."""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     candidates = [SETTINGS_PATH,
+                  BACKUP_PATH,                                       # the settings file was damaged or lost
                   BASE_DIR / "laugh_clipper_settings.json",          # older single-file version
                   Path.cwd() / "laugh_clipper_settings.json"]
     for path in candidates:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("not a settings file")
         except FileNotFoundError:
             continue
         except Exception as e:
             log.warning("Couldn't read %s: %s", path, e)
+            if path == SETTINGS_PATH:
+                try:
+                    path.replace(BAD_PATH)         # keep it, and stop the next save from hiding what happened
+                except OSError:
+                    pass
             continue
+        if path == BACKUP_PATH:
+            log.warning("Settings restored from the backup")
         if "hits_needed" in data and "min_laugh" not in data:
             data["min_laugh"] = data["hits_needed"] * 0.5
         if "setup_done" not in data:
@@ -131,6 +143,11 @@ def load():
             S["pad_mode"] = DEFAULTS["pad_mode"]
         if path != SETTINGS_PATH:
             save()
+        else:
+            try:
+                BACKUP_PATH.write_bytes(path.read_bytes())     # it loaded, so it's a good one to fall back on
+            except OSError as e:
+                log.warning("Couldn't back up the settings: %s", e)
         return True
     return False
 

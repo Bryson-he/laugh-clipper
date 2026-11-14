@@ -162,6 +162,8 @@ count, your most clipped game and your best laugh.
 - **What's new:** after each update, a short summary of what changed.
 - **Optional sound:** a soft chime (or a pop, marimba or bell) when the popup appears, on any output you choose. Handy
   in exclusive-fullscreen games where the popup can't show.
+- **Tells you when something's wrong:** the General page checks Medal, your hotkey, the clips folder and your audio,
+  and **Test Clip** saves a real clip to prove it all works. Audio sources that drop out are restarted by themselves.
 - **Pause hotkey:** pick a key on the General page to pause and resume listening without opening anything.
 - **Tray icon shows what it's doing:** grey when paused, an orange dot when it's waiting for a game or Medal is closed.
 - **Put the popup anywhere:** any corner or edge of any monitor, and choose how long it stays up.
@@ -270,7 +272,8 @@ The only thing Laugh Clipper connects to is GitHub, to check for updates, and yo
 <summary><b>Where are my settings and the log?</b></summary>
 
 In `%APPDATA%\Laugh Clipper`: `settings.json` and `laugh_clipper.log`. If something goes wrong, the log is the
-first place to look.
+first place to look: **General → Troubleshooting → Open Log**, or **Copy Diagnostics** for a summary to paste
+into a bug report.
 </details>
 
 ## How it hears laughs

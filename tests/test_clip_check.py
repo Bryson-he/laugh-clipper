@@ -52,7 +52,7 @@ def test_no_file_means_didnt_save(ctrl):
     ctrl.clip()
     ctrl.watcher.deadline = time.time() - 1
     ctrl.watcher._poll()
-    assert ctrl.toast.mode == "failed" and not ctrl.watcher.active()
+    assert ctrl.toast.mode == "failed"                    # (it keeps looking a while: see test_reliability)
     assert ctrl.history[-1]["status"] == "failed"
 
 

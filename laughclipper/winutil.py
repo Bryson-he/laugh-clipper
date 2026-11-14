@@ -327,3 +327,43 @@ def style_titlebar(hwnd, dark, caption_hex, text_hex):
         dwm.DwmSetWindowAttribute(hwnd, 36, ctypes.byref(colorref(text_hex)), 4)
     except Exception:
         pass
+
+
+def is_admin():
+    """This copy of Laugh Clipper is running as administrator."""
+    if not IS_WIN:
+        return False
+    try:
+        return bool(ctypes.WinDLL("shell32").IsUserAnAdmin())
+    except OSError:
+        return False
+
+
+def runs_elevated(pid):
+    """True when that process runs as administrator and we don't: Windows then stops our key presses
+    reaching it (and Medal's hotkey with them). None when it can't be told."""
+    if not IS_WIN or not pid or is_admin():
+        return False
+    advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+    advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    advapi.GetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+                                           ctypes.POINTER(wintypes.DWORD)]
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    proc = k32.OpenProcess(0x1000, False, pid)                 # PROCESS_QUERY_LIMITED_INFORMATION
+    if not proc:
+        return None
+    try:
+        token = wintypes.HANDLE()
+        if not advapi.OpenProcessToken(proc, 0x0008, ctypes.byref(token)):       # TOKEN_QUERY
+            return True if ctypes.get_last_error() == 5 else None                 # access denied: it's above us
+        try:
+            elevated, size = wintypes.DWORD(), wintypes.DWORD()
+            ok = advapi.GetTokenInformation(token, 20, ctypes.byref(elevated), 4, ctypes.byref(size))  # TokenElevation
+            return bool(elevated.value) if ok else None
+        finally:
+            k32.CloseHandle(token)
+    finally:
+        k32.CloseHandle(proc)

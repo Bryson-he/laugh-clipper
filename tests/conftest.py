@@ -28,7 +28,8 @@ def fresh_settings():
     """Every test starts from the defaults, with no settings file."""
     config.S.clear()
     config.S.update(copy.deepcopy(config.DEFAULTS))
-    config.SETTINGS_PATH.unlink(missing_ok=True)
+    for path in (config.SETTINGS_PATH, config.BACKUP_PATH, config.BAD_PATH):
+        path.unlink(missing_ok=True)
     SENT.clear()
     yield
 

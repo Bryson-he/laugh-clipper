@@ -152,12 +152,19 @@ class Controller(QObject):
         self.tuning = False          # our own window is in front, so we listen even without a game
         self.medal_ok = True         # False when Medal isn't running (and we're checking for it)
         self.recording = False       # Medal is recording a session right now
+        self.game_admin = False      # the game in front runs as administrator and we don't: keys won't reach it
+        self.admin_checked = (0, False)     # (process id, runs as admin) for the last game looked at
+        self.admin_warned = set()    # games we've already shown the tray warning for
+        self.source_problems = []    # audio sources that have been failing for a while
+        self.health_at = time.monotonic()
         self.moment = None           # the laugh the popup is about: sound, source, game, peak score
         self.sent_at = 0.0           # when we last sent the hotkey (it echoes back as a key press)
         self.history = clips.load_history()
         self.watcher = clips.ClipWatcher()
         self.watcher.found.connect(self.on_clip_found)
         self.watcher.missing.connect(self.on_clip_missing)
+        self.watcher.late.connect(self.on_clip_late)
+        self.failed_entry = None       # the history entry for a clip that didn't seem to save (it may turn up late)
 
         self._hotkey_hit.connect(self.on_hotkey_pressed)
         self._pause_hit.connect(self.toggle_pause)
@@ -190,6 +197,9 @@ class Controller(QObject):
         self.medal_timer = QTimer(self)
         self.medal_timer.setInterval(5000)
         self.medal_timer.timeout.connect(self.check_medal)
+        self.health_timer = QTimer(self)
+        self.health_timer.setInterval(5000)
+        self.health_timer.timeout.connect(self.check_health)
 
         self.setup_tray()
         self.register_hotkey()
@@ -201,6 +211,7 @@ class Controller(QObject):
         self.ticker.start()
         self.game_timer.start()
         self.medal_timer.start()
+        self.health_timer.start()
         self.update_timer.start()
         self.update_pads()
         if S["check_updates"]:
@@ -227,6 +238,79 @@ class Controller(QObject):
             self.voice.load()
         if key == "pad_button":
             self.update_pads()
+
+    # ----- keeping itself working -----
+    def check_health(self):
+        """Every 5 s: restart audio sources that have hung, notice ones that stay broken, and put the hotkeys
+        back after the PC has been asleep (Windows can drop them)."""
+        now = time.monotonic()
+        slept = now - self.health_at > 30
+        self.health_at = now
+        if slept:
+            log.info("back from sleep: re-registering hotkeys")
+            self.register_hotkey()
+            self.engine.alive.clear()            # give every source a fresh STALL_SECONDS
+            self.check_medal()
+        self.engine.restart_stalled()
+        problems = self.engine.problems()
+        if problems != self.source_problems:
+            self.source_problems = problems
+            self.update_tray()
+            self.changed.emit("sources")
+
+    def health(self):
+        """What has to be right for clips to save, as [(key, ok, what's wrong and what to do)].
+        ok is None when it can't be told (those don't count as problems)."""
+        clip_keys = medal.clip_hotkeys()
+        folder = clips.clips_folder()
+        lost = ", ".join(source_label(k) for k in self.source_problems)
+        checks = [
+            ("medal", self.medal_ok, "Medal isn't running, so clips can't be saved."),
+            ("hotkey", any(hk == S["hotkey"] for _, hk in clip_keys) if clip_keys else None,
+             f"Your clip hotkey ({hotkey_label()}) isn't one of Medal's. Fix it on the Clipping page."),
+            ("folder", (folder is not None) if S["confirm_clips"] else None,
+             "Medal's clips folder wasn't found, so saved clips can't be checked. Choose it on the Clipping page."),
+            ("sources", bool(self.engine.wanted()) or not S["running"],
+             "Nothing to listen to. Turn on your mic or some PC audio on the Audio page."),
+            ("audio", not lost, f"Can't hear {lost}. Check it's plugged in and not in use by something else."),
+            ("admin", not self.game_admin,
+             f"{self.game or 'The game'} runs as administrator, which blocks the clip hotkey. Run Laugh Clipper "
+             "as administrator too."),
+        ]
+        last = self.history[-1] if self.history else None
+        if last and last.get("status") == "failed":
+            checks.append(("last", False, "The last clip didn't save. Use Test Clip to check it works now."))
+        return checks
+
+    def test_clip(self):
+        """Press Medal's hotkey for real and check the clip turns up (it's saved like any other)."""
+        log.info("test clip")
+        self.clip_now("Test", "test", "Test clip", force=True)
+
+    def diagnostics(self):
+        """A summary for troubleshooting, with nothing personal in it (no folders, no game list)."""
+        import platform
+        home = str(Path.home())
+        lines = [f"Laugh Clipper {VERSION} on Windows {platform.version()}",
+                 f"Status: {self.status()}" + (f", game in front: {self.game}" if self.game else ""), "", "Checks:"]
+        lines += [f"  {'ok ' if ok else '?  ' if ok is None else 'BAD'} {key}" + ("" if ok is not False else f": {text}")
+                  for key, ok, text in self.health()]
+        keep = ("auto_clip", "clip_delay", "max_wait", "confirm_clips", "game_only", "triggers", "threshold",
+                "sound_levels", "min_laugh", "pause_tolerance", "cooldown", "listen_mic", "group_laughs",
+                "voice_cancel", "hype_phrases", "smart_length", "bookmark_when_recording", "pad_mode")
+        lines += ["", "Settings:"] + [f"  {k} = {S[k]}" for k in keep]
+        lines.append(f"  sources = {[source_label(k) for k in self.engine.wanted()]}")
+        kinds = {}
+        for e in self.history[-50:]:
+            kinds[e.get("status")] = kinds.get(e.get("status"), 0) + 1
+        lines += ["", f"Last {min(len(self.history), 50)} clips: {kinds}", "", "Recent problems:"]
+        try:
+            log_lines = config.LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            log_lines = []
+        bad = [ln for ln in log_lines if " WARNING " in ln or " ERROR " in ln][-15:]
+        lines += [f"  {ln.replace(home, '~')}" for ln in bad] or ["  none"]
+        return "\n".join(lines)
 
     # ----- Medal -----
     def check_medal(self):
@@ -272,7 +356,7 @@ class Controller(QObject):
     # ----- games -----
     def check_game(self):
         """When 'only while playing' is on, pause detection unless a game is the window in front."""
-        game, tuning = None, False
+        game, tuning, admin = None, False, False
         if S["game_only"] and S["running"]:
             now = time.time()
             pid, path, full = winutil.foreground_app()
@@ -288,6 +372,9 @@ class Controller(QObject):
             if match or (S["fullscreen_games"] and full and path and exe not in winutil.SYSTEM_EXES):
                 game = match["name"] if match else winutil.exe_description(path)
                 self.game_seen = now
+                if self.admin_checked[0] != pid:
+                    self.admin_checked = (pid, bool(winutil.runs_elevated(pid)))
+                admin = self.admin_checked[1]
             elif pid == os.getpid() or self.settings_open():
                 # our settings window or setup guide is open (even on another monitor): keep listening,
                 # so the meters work while you set things up
@@ -295,8 +382,14 @@ class Controller(QObject):
             elif self.game and now - self.game_seen < GAME_GRACE:
                 game = self.game                 # quick alt-tab: keep listening for a moment
         gated = bool(S["game_only"] and S["running"] and game is None and not tuning)
-        if game != self.game or gated != self.engine.gated or tuning != self.tuning:
-            self.game, self.engine.gated, self.tuning = game, gated, tuning
+        if admin and game not in self.admin_warned:
+            self.admin_warned.add(game)
+            log.warning("%s runs as administrator: the clip hotkey won't reach Medal", game)
+            self.tray.showMessage(f"{game} runs as administrator",
+                                  "Windows blocks Laugh Clipper's clip hotkey while it's in front. Run Laugh "
+                                  "Clipper as administrator too, or run the game normally.", self.icon, 8000)
+        if game != self.game or gated != self.engine.gated or tuning != self.tuning or admin != self.game_admin:
+            self.game, self.engine.gated, self.tuning, self.game_admin = game, gated, tuning, admin
             log.info("game in front: %s", game or ("none, waiting" if gated else
                                                    "none, but settings are open" if tuning else "not needed"))
             self.update_tray()
@@ -504,13 +597,13 @@ class Controller(QObject):
         elif not popup:                 # a hype phrase during a popup is the same moment
             self.on_laugh(("mic", S["mic_device"]), "hype", title)
 
-    def clip_now(self, label, sound, title=None):
+    def clip_now(self, label, sound, title=None, force=False):
         """Save a clip straight away ("clip that", or the controller button): the popup's Clip button if one is
         up, otherwise a fresh moment that goes straight to saving."""
         if self.toast is not None and self.toast.mode in ("ask", "pending") and not self.toast_is_test:
             self.clip()
             return
-        if not S["running"]:
+        if not S["running"] and not force:
             return
         now = time.time()
         self.pending = None
@@ -626,6 +719,19 @@ class Controller(QObject):
             self.tray.showMessage("Clip didn't save", "Medal didn't make a clip. Check the hotkey on the Clipping "
                                   "page matches Medal's.", self.icon, 6000)
         self.record("failed")
+        self.failed_entry = self.history[-1]
+
+    def on_clip_late(self, path):
+        """Medal was slow: the clip we said didn't save has turned up after all. Put the record straight."""
+        log.info("clip saved after all (Medal was slow): %s", path)
+        entry, self.failed_entry = self.failed_entry, None
+        if entry is not None and any(e is entry for e in self.history):
+            entry["status"], entry["file"] = "saved", path
+            entry["game"] = entry.get("game") or Path(path).parent.name
+            clips.save_history(self.history)
+            self.history_changed.emit()
+        if self.toast and self.toast.mode == "failed":
+            self.toast.set_saved(Path(path).parent.name)
 
     def record(self, status, path=""):
         self.history.append(clips.new_entry(self.moment or {}, status, path))
@@ -736,6 +842,8 @@ class Controller(QObject):
 
     def on_update_state(self, state, info):
         self.update_state = (state, info)
+        if state == "error" and not info.get("manual") and S["check_updates"]:
+            QTimer.singleShot(30 * 60 * 1000, lambda: self.check_updates(False))     # offline? look again later
         if state == "available" and info["version"] != self.notified_version:
             self.notified_version = info["version"]
             self.tray.showMessage("Laugh Clipper", f"Version {info['version']} is ready to install. "
@@ -779,12 +887,15 @@ class Controller(QObject):
                 "listening": f"Listening  ·  {self.game}" if self.game else "Listening"}[self.status()]
         self.act_status.setText(text)
         self.act_medal.setVisible(not self.medal_ok)
+        lost = ", ".join(source_label(k) for k in self.source_problems)
         extra = ("\nMedal isn't running, so clips won't save" if not self.medal_ok else
+                 f"\nCan't hear: {lost}" if lost else
+                 "\nThe game runs as administrator, so clips may not save" if self.game_admin else
                  "\nMedal is recording, so laughs add bookmarks" if self.recording and S["bookmark_when_recording"]
                  else "")
         self.tray.setToolTip(f"Laugh Clipper\n{text}{extra}")
         state = self.status()
-        if state != "paused" and not self.medal_ok:
+        if state != "paused" and (not self.medal_ok or lost or self.game_admin):
             state = "warning"
         self.tray.setIcon(self.tray_icon(state))
 
