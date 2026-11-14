@@ -23,6 +23,7 @@ SR = 48000
 HOP = 0.25                 # analyse a 1 s window every 0.25 s
 CHUNK = 0.05               # audio is read in 50 ms pieces, so the loudness meter updates 20 times a second
 KEEP_RATIO = 0.55          # once laughing, a score above 55% of the trigger keeps it "still laughing"
+POLL = 0.010               # how often a recorder asks Windows for new audio (soundcard's own loop asks ~1000×/s)
 STALL_SECONDS = 8          # a source that hasn't delivered audio for this long is restarted
 DEFAULT_CHECK = 5          # how often (s) a source on "Windows default" checks the default hasn't changed
 GROUP_RATIO = 0.75         # group laughs: each source only needs 75% of its trigger level…
@@ -112,7 +113,40 @@ def _patch_soundcard():
         self._idle_start_time = None
 
     mf._AudioClient.__init__ = init
+    _patch_polling(mf)
     mf._laughclipper_patched = True
+
+
+def _patch_polling(mf):
+    """soundcard waits for audio by asking WASAPI "anything yet?" every quarter of the device's minimum period:
+    about a thousand times a second per source. Each ask is a call into the Windows Audio service, which with
+    three sources cost it ~4.4% of a 12-thread CPU (measured 15 Nov 2026), far more than our own process. Asking
+    every POLL (10 ms, one device period) costs ~0.6% and loses nothing: the audio waits in WASAPI's buffer.
+    Don't go slower: soundcard treats a wait of 4 device periods (40 ms) as "the device is silent" and makes
+    up zeros for it, on top of the real audio that then arrives."""
+    original = mf._Recorder._record_chunk
+
+    def record_chunk(self):
+        if self._capture_available_frames() == 0:
+            # the device period never changes, and asking for it is another call into the audio service
+            # (soundcard asks on every pass: that alone was ~4% of a core per source)
+            period = getattr(self, "_laughclipper_period", None)
+            if period is None:
+                period = self._laughclipper_period = self.deviceperiod[0]
+        while self._capture_available_frames() == 0:
+            # the same waiting soundcard does (silent devices deliver nothing, so zeros are made up for them),
+            # only less often
+            if self._idle_start_time is None:
+                self._idle_start_time = time.perf_counter_ns()
+            time.sleep(POLL)
+            elapsed_ns = time.perf_counter_ns() - self._idle_start_time
+            if elapsed_ns / 1e9 > max(period, POLL) * 4:
+                frames = int(self.samplerate * elapsed_ns / 1e9)
+                self._idle_start_time += elapsed_ns
+                return np.zeros([frames * len(set(self.channelmap))], dtype="float32")
+        return original(self)          # frames are waiting, so its own loop is skipped
+
+    mf._Recorder._record_chunk = record_chunk
 
 
 def short_name(device_name):
@@ -137,9 +171,11 @@ def model_path():
 
 def _skip_matplotlib():
     """MediaPipe imports matplotlib for drawing helpers we never use: about 40 MB of memory and half a second
-    at startup. Give it empty stand-ins instead (they're also left out of the built app)."""
+    at startup. Give it empty stand-ins instead (they're also left out of the built app). The same for
+    sounddevice, which loads PortAudio and scans every audio device just by being imported; we record with
+    soundcard."""
     import types
-    for name in ("matplotlib", "matplotlib.pyplot"):
+    for name in ("matplotlib", "matplotlib.pyplot", "sounddevice"):
         sys.modules.setdefault(name, types.ModuleType(name))
 
 
@@ -160,7 +196,9 @@ def classify(classifier, samples):
     from mediapipe.tasks.python.components.containers import audio_data as ad
     data = ad.AudioData.create_from_array(samples, SR)
     scores, top, top_score = dict.fromkeys(SOUNDS, 0.0), "", 0.0
-    for res in classifier.classify(data):
+    # YAMNet looks at 0.975 s at a time, so a 1 s window comes back as two results: the real one, and one for
+    # the last 25 ms padded out with silence. Only the first means anything.
+    for res in classifier.classify(data)[:1]:
         for c in res.classifications[0].categories:
             sound = LABEL_SOUND.get(c.category_name)
             if sound:
@@ -173,6 +211,18 @@ def classify(classifier, samples):
 def sound_names(sound):
     """(name, "still ..." text) for a sound key, including the ones that aren't YAMNet sounds."""
     return SOUNDS.get(sound) or OTHER_SOUNDS.get(sound) or SOUNDS["laughter"]
+
+
+def downmix(block):
+    """Frames × channels -> mono. Stereo is averaged. Surround devices (5.1, 7.1) mostly carry sound in two or
+    three of their channels, so averaging all of them would make it 3-4 times quieter than it is: those are
+    summed and halved instead, like a stereo downmix."""
+    if block.ndim < 2:
+        return block.astype(np.float32)
+    channels = block.shape[1]
+    if channels <= 2:
+        return block.mean(axis=1).astype(np.float32)
+    return np.clip(block.sum(axis=1) / 2, -1.0, 1.0).astype(np.float32)
 
 
 def source_id(key):
@@ -266,6 +316,13 @@ class Engine(QObject):
             threading.Thread(target=self._listen, args=(key, stop), daemon=True,
                              name=f"listen-{key[0]}-{short_name(key[1])}").start()
 
+    def resting(self, key):
+        """While waiting for a game there's nothing to listen for, so this source's stream is closed. The mic
+        is kept while a popup is up, for "don't clip"."""
+        if not self.gated:
+            return False
+        return not (key[0] == "mic" and self.voice is not None and self.voice.active)
+
     def restart_stalled(self):
         """A recorder can hang without an error (a device vanishing mid-read, sleep/wake). Give any source that
         has been silent for STALL_SECONDS a new thread; the stuck one is left to die. Returns the keys restarted."""
@@ -337,6 +394,15 @@ class Engine(QObject):
         last_error = None
         while not stop.is_set():
             self.alive[key] = time.monotonic()
+            if self.resting(key):
+                # waiting for a game: don't hold a recording stream open (an open stream keeps the Windows
+                # audio engine working for us even when we throw the audio away)
+                self.levels[key] = 0.0
+                self.heard[key] = ("paused", 0.0)
+                self.volume[key] = 0.0
+                self.scores.pop(key, None)
+                stop.wait(0.25)
+                continue
             try:
                 sc = get_soundcard()
                 if classifier is None:
@@ -378,7 +444,7 @@ class Engine(QObject):
                     while not stop.is_set():
                         # read in small chunks so the loudness meter moves smoothly; classify every HOP
                         block = rec.record(numframes=chunk_n)
-                        mono = (block.mean(axis=1) if block.ndim > 1 else block).astype(np.float32)
+                        mono = downmix(block)
                         window = np.concatenate([window[len(mono):], mono])
                         self.volume[key] = float(np.sqrt(np.mean(mono ** 2)))
                         self.alive[key] = time.monotonic()
@@ -395,7 +461,10 @@ class Engine(QObject):
                             continue
                         vol = float(np.sqrt(np.mean(window[-chunk_n * per_hop:] ** 2)))
 
-                        if self.gated:
+                        if self.resting(key):
+                            log.info("[%s] resting until a game is in front", label)
+                            break
+                        if self.gated:                 # the mic stays open for "don't clip" while a popup is up
                             self.levels[key] = 0.0
                             self.heard[key] = ("paused", vol)
                             self.scores.pop(key, None)
