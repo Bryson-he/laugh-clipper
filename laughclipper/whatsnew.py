@@ -21,6 +21,15 @@ def notes(version):
     return re.sub(r"^## ", "### ", text, flags=re.M)                  # so the other headings sit under it
 
 
+def split_notes(markdown, keep=2):
+    """(the first `keep` sections, everything after them): the window leads with the main changes and
+    keeps the rest behind "Show all changes"."""
+    starts = [m.start() for m in re.finditer(r"^### ", markdown, flags=re.M)]
+    if len(starts) <= keep:
+        return markdown, ""
+    return markdown[:starts[keep]].rstrip(), markdown[starts[keep]:]
+
+
 def to_html(markdown):
     """Our release notes are simple Markdown (### headings, - bullets, **bold**, `code`); turn them into
     HTML with a bit of breathing room, which QLabel's own Markdown rendering doesn't give."""
@@ -105,8 +114,19 @@ class WhatsNewWindow(QWidget):
         body.setWordWrap(True)
         body.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
         body.setOpenExternalLinks(True)
-        body.setText(to_html(notes(version)))
+        lead, rest = split_notes(notes(version))
+        body.setText(to_html(lead))
         il.addWidget(body)
+        self.rest = QLabel(inner)
+        self.rest.setTextFormat(Qt.TextFormat.RichText)
+        self.rest.setWordWrap(True)
+        self.rest.setText(to_html(rest))
+        self.rest.setVisible(False)
+        il.addWidget(self.rest)
+        self.more = QPushButton("Show All Changes", inner)
+        self.more.setVisible(bool(rest))
+        self.more.clicked.connect(self.show_all)
+        il.addWidget(self.more, 0, Qt.AlignmentFlag.AlignLeft)
         il.addStretch(1)
         scroll.setWidget(inner)
         lay.addWidget(scroll, 1)
@@ -123,6 +143,10 @@ class WhatsNewWindow(QWidget):
         bl.addWidget(ok)
         lay.addWidget(bar)
         T.changed.connect(self.apply_titlebar)
+
+    def show_all(self):
+        self.rest.setVisible(True)
+        self.more.setVisible(False)
 
     def apply_titlebar(self):
         winutil.style_titlebar(int(self.winId()), T.dark, T.p["window"], T.p["text"])

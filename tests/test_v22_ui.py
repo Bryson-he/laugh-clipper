@@ -42,7 +42,7 @@ def test_pages_and_where_things_moved(win):
         return next(t for i, t in enumerate(TITLES) if win.stack.widget(i).isAncestorOf(widget))
     assert page_of(win.game_row) == "Games" and page_of(win.games_group) == "Games"
     assert page_of(win.pause_row) == page_of(win.voice_row) == page_of(win.pad_row) == "Shortcuts"
-    assert page_of(win.hotkey_row) == "Clipping" and page_of(win.health_row) == "General"
+    assert page_of(win.hotkey_row) == "Clipping" and page_of(win.status_row) == "General"
 
 
 def test_sidebar_keyboard_changes_page(win):
@@ -204,6 +204,7 @@ def test_page_change_rises_and_settles(win, qapp):
     win.show()
     win.select(2)
     assert win.fade.t.value == 0 and win.fade.curtain.alpha == 1 and win.stack.currentWidget().y() == win.fade.RISE
+    assert win.fade.RISE <= 8 and win.fade.t.stiffness > (2 * 3.14159 / 0.3) ** 2      # quick: under 0.3 s
     win.fade.t.snap(1.0)
     win.fade.step()
     assert win.stack.currentWidget().y() == 0 and win.fade.curtain.isHidden()
@@ -324,3 +325,57 @@ def test_thumbnails_load_once_in_the_background(monkeypatch, qapp):
 def test_settings_still_use_the_same_keys(win):
     """Moving rows between pages mustn't change what gets saved."""
     assert S["pause_hotkey"] == "" and {"voice_cancel", "hype_phrases", "game_only"} <= set(win.switches)
+
+
+# ---------------------------------------------------------------- 2.3: status card, pinned live score, timing
+def test_status_card_follows_the_app(ctrl, pc):
+    w = SettingsWindow(ctrl)
+    try:
+        assert w.status_row.title.text() == "Listening for laughs"
+        S["game_only"] = True
+        pc.front = (1, r"C:\Windows\explorer.exe", False)
+        pc.wait(10)
+        ctrl.check_game()
+        assert w.status_row.title.text() == "Waiting for a game"
+        pc.medal = False
+        ctrl.check_medal()
+        assert "Medal isn't running" in w.status_row.sub.text() and not w.medal_row.isHidden()
+        assert not w.test_btn.isEnabled()
+    finally:
+        w.close()
+        w.deleteLater()
+
+
+def test_live_score_is_pinned_above_the_detection_settings(win):
+    i = TITLES.index("Detection")
+    holder, scroll = win.stack.widget(i), win.scroller(i)
+    assert scroll is not holder and holder.isAncestorOf(win.live_meter) and not scroll.isAncestorOf(win.live_meter)
+    assert scroll.isAncestorOf(win.sliders["threshold"])
+    assert win.scroller(0) is win.stack.widget(0)
+    assert win.live_text({}) == "Starting…" or "Nothing to listen to" in win.live_text({})
+    S["running"] = False
+    assert win.live_text({}) == "Paused"
+
+
+def test_timing_is_folded_away_and_search_opens_it(win):
+    assert win.timing_panel.isHidden() and "Length needed 1 s" in win.timing_row.sub.text()
+    win.ctrl.set("cooldown", 45)
+    assert "wait between prompts 45 s" in win.timing_row.sub.text()
+    win.search.setText("pause tolerance")
+    assert win.results.entries[0] == ("Pause tolerance", "Detection")
+    win.open_result(0)
+    assert win.timing_panel.opener.isChecked() and not win.timing_panel.isHidden()
+
+
+def test_setup_guide_shows_the_real_popup(ctrl, qapp):
+    ctrl.show_setup()
+    g = ctrl.setup
+    assert g.welcome_stage.toast.mode == "ask" and g.done_stage.toast.mode == "saved"
+    assert not g.welcome_stage.toast.timer.isActive()            # a still picture until the page plays it
+    g.welcome_stage.play()
+    t = g.welcome_stage.toast
+    assert t.timer.isActive() and t.close_at is None
+    g.welcome_stage.hold(t)
+    assert not t.timer.isActive()
+    assert not t.isVisible()                                     # the Toast itself never goes on screen
+    g.close()

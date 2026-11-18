@@ -41,6 +41,7 @@ DEFAULTS = {
     "bookmark_when_recording": False,  # while Medal is recording, press its bookmark key instead of clipping
     "bookmark_hotkey": "",     # Medal's bookmark hotkey; "" = read it from Medal's settings
     "voice_cancel": False,     # saying "don't clip" while the popup is up cancels it (needs the mic)
+    "phrases_off": [],         # hype/clip phrases the user doesn't want listened for ("oh my god"…)
     "hype_phrases": False,     # saying "clip that" saves a clip; "no way", "oh my god", "let's go" count as a moment
     "pause_hotkey": "",        # a key to pause/resume detection; "" = none
     "pad_button": {},          # controller/wheel button that clips: {"id", "name", "button"}; {} = none
@@ -139,6 +140,9 @@ def load():
                            if isinstance(pad, dict) and isinstance(pad.get("id"), str)
                            and isinstance(pad.get("button"), (str, int)) and not isinstance(pad.get("button"), bool)
                            else {})
+        from .voice import CLIP_PHRASES, HYPE_PHRASES
+        off = S["phrases_off"] if isinstance(S["phrases_off"], list) else []
+        S["phrases_off"] = [p for p in CLIP_PHRASES + HYPE_PHRASES if p in off]
         if S["pad_mode"] not in ("popup", "always"):
             S["pad_mode"] = DEFAULTS["pad_mode"]
         if path != SETTINGS_PATH:

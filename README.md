@@ -113,16 +113,17 @@ triggers sooner and at a lower level than a laugh on its own. A whole lobby losi
 ### 🗣️ Voice commands
 
 - **"Clip that"** saves a clip straight away. Shout **"no way"**, **"oh my god"** or **"let's go"** and it counts as
-  a moment, just like a laugh. Turn on **Clipping → Clip with hype phrases**.
+  a moment, just like a laugh. Turn on **Shortcuts → Clip with hype phrases**, and switch off any phrase you don't
+  want it to listen for.
 - **"Don't clip"** (or "cancel clip") while a popup is up calls it off, even during an auto-save countdown. Turn on
-  **Clipping → Cancel with your voice**.
+  **Shortcuts → Cancel with your voice**.
 
 Speech recognition runs offline on your PC with [Vosk](https://alphacephei.com/vosk/) and only listens for those few
 phrases. Hype phrases need to be said on their own, so "no wait, come back" doesn't set it off.
 
 ### 🕹️ Clip with a controller or wheel
 
-Pick any button on an Xbox or PlayStation controller, a racing wheel or a button box (**Clipping → Clip button**,
+Pick any button on an Xbox or PlayStation controller, a racing wheel or a button box (**Shortcuts → Clip button**,
 then press it). It saves the clip while a popup is showing, or any time you like. It works while the game is in
 front, with nothing extra to install.
 
@@ -139,7 +140,7 @@ clip is actually there. If Medal didn't make one (say the hotkey doesn't match),
 And if Medal isn't running at all, it warns you before you need it, with an **Open Medal** button.
 
 Every clip goes into the **History** page, grouped by day with a thumbnail: what was heard, where, in which game,
-and whether it saved, with buttons to **Play** it or show it in its folder. Filter it to just the saved ones, the
+and whether it saved. Click the thumbnail to play it, or show it in its folder. Filter it to just the saved ones, the
 ones that didn't save, or the ones you marked not funny. Stats along the top show how many clips you've saved, this
 week's count, your most clipped game and your best laugh.
 

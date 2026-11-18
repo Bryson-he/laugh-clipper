@@ -9,6 +9,7 @@ from . import medal, winutil
 from .config import S, hotkey_label
 from .engine import short_name
 from .theme import T
+from .toast import PopupStage
 from .widgets import AA, NO_PEN, AnimDriver, Group, KeyCap, LevelMeter, PageFade, Row, StatusPill, Switch, blend, loudness
 
 
@@ -75,7 +76,7 @@ class SetupGuide(QWidget):
             page = QWidget()
             page.setObjectName("content")
             pl = QVBoxLayout(page)
-            pl.setContentsMargins(40, 34, 40, 10)
+            pl.setContentsMargins(40, 30, 40, 10)
             pl.setSpacing(10)
             build(pl)
             pl.addStretch(1)
@@ -110,22 +111,16 @@ class SetupGuide(QWidget):
 
     # ---------------------------------------------------------- pages
     def page_welcome(self, pl):
-        pl.addSpacing(24)
-        icon = QLabel()
-        icon.setPixmap(self.ctrl.icon.pixmap(96, 96))
-        pl.addWidget(icon, 0, Qt.AlignmentFlag.AlignHCenter)
-        pl.addSpacing(6)
-        t = title_label("Welcome to Laugh Clipper")
-        t.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        pl.addWidget(t)
-        b = body_label("It listens while you play and saves a Medal clip when someone laughs, so the funniest "
-                       "moments are never lost. Setting it up takes about a minute.")
-        b.setAlignment(Qt.AlignmentFlag.AlignHCenter)
-        pl.addWidget(b)
-        pl.addSpacing(14)
+        self.welcome_stage = PopupStage("ask", "Voice Chat", "laughter", hotkey_label())
+        pl.addWidget(self.welcome_stage)
+        pl.addSpacing(10)
+        pl.addWidget(title_label("Welcome to Laugh Clipper"))
+        pl.addWidget(body_label("When someone laughs while you play, this pops up over your game. One click and "
+                                "Medal saves the clip. Setting it up takes about a minute."))
+        pl.addSpacing(8)
         g = Group()
         g.add(Row("Hears your mic, game and voice chat", "Each one separately, with its own meter."))
-        g.add(Row("Asks, or saves the clip for you", "A small popup that never takes focus from your game."))
+        g.add(Row("Asks, or saves the clip for you", "It never takes focus from your game."))
         g.add(Row("Checks Medal really saved it", "And keeps a history of every clip."))
         pl.addWidget(g)
 
@@ -179,8 +174,11 @@ class SetupGuide(QWidget):
         self.update_level_row()
 
     def page_done(self, pl):
+        self.done_stage = PopupStage("saved", "Voice Chat", "laughter", height=130)
+        pl.addWidget(self.done_stage)
+        pl.addSpacing(10)
         pl.addWidget(title_label("You're all set"))
-        pl.addWidget(body_label("Laugh Clipper keeps running in the system tray. Click its icon to open the "
+        pl.addWidget(body_label("Laugh Clipper is listening now. It lives in the system tray: click its icon for "
                                 "settings, or right-click it to pause."))
         pl.addSpacing(8)
         g = Group()
@@ -212,6 +210,13 @@ class SetupGuide(QWidget):
         if getattr(self, "fade", None) is None:
             self.fade = PageFade(self.stack)
         self.fade.start(animate)
+        stage = {0: self.welcome_stage, self.STEPS - 1: self.done_stage}.get(i)
+        if stage is not None:
+            stage.hotkey = hotkey_label()
+            if animate and self.isVisible():
+                stage.play()                    # the popup springs open as the page arrives
+            else:
+                stage.still()
 
     def next_clicked(self):
         i = self.stack.currentIndex()

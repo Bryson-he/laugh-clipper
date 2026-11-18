@@ -50,9 +50,15 @@ def phrase_kind(text):
     return None
 
 
+def wanted_phrases():
+    """The clip and hype phrases that are switched on (Shortcuts page: each can be turned off)."""
+    return [p for p in CLIP_PHRASES + HYPE_PHRASES if p not in S["phrases_off"]]
+
+
 def grammar(cancel, hype):
-    """The phrases to listen for; anything else comes out as [unk]."""
-    phrases = (list(CANCEL_PHRASES) if cancel else []) + (list(CLIP_PHRASES + HYPE_PHRASES) if hype else [])
+    """The phrases to listen for; anything else comes out as [unk]. A phrase that's switched off isn't in
+    the grammar at all, so it can't be heard, let alone acted on."""
+    phrases = (list(CANCEL_PHRASES) if cancel else []) + (wanted_phrases() if hype else [])
     return phrases + ["[unk]"]
 
 
@@ -115,7 +121,7 @@ class VoiceCommands(QObject):
         """One 50 ms chunk of mic audio (48 kHz float). Runs on the mic's audio thread.
         gated: waiting for a game, so only "don't clip" (for a popup that's already up) counts."""
         cancel = self.active and S["voice_cancel"]
-        hype = S["hype_phrases"] and not gated
+        hype = S["hype_phrases"] and not gated and bool(wanted_phrases())
         if not (cancel or hype) or self.model is None:
             return
         try:

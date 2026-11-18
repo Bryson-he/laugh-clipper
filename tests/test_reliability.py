@@ -274,14 +274,18 @@ def test_health_card_on_the_general_page(ctrl, pc):
     from laughclipper.settings_window import SettingsWindow
     w = SettingsWindow(ctrl)
     try:
-        assert w.health_row.title.text() == "Everything's working" and w.health_bad == []
+        assert w.status_row.title.text() == "Listening for laughs" and w.health_bad == [] and w.problem_rows == []
+        assert "Medal ready" in w.status_row.sub.text()
         S["listen_mic"], S["outputs"] = False, []
         ctrl.changed.emit("outputs")
-        assert w.health_row.title.text() == "1 thing needs attention" and w.health_bad == ["sources"]
+        assert w.health_bad == ["sources"] and len(w.problem_rows) == 1
+        assert "Nothing to listen to" in w.status_row.sub.text()
         w.copy_diagnostics()
         from PySide6.QtGui import QGuiApplication
         text = QGuiApplication.clipboard().text()
         assert "BAD sources" in text and "Laugh Clipper" in text
+        ctrl.set("running", False)
+        assert w.status_row.title.text() == "Paused" and w.switches["running"].isChecked() is False
     finally:
         w.close()
         w.deleteLater()

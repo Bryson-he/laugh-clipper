@@ -134,9 +134,11 @@ class AnimDriver(QObject):
         self.springs.append(s)
         return s
 
-    def to(self, spring, target):
+    def to(self, spring, target, fade=False):
+        """Send a spring to a target. fade=True marks a plain fade (no movement), which still plays when
+        Windows' animations are off: reduced motion means less movement, not no feedback."""
         spring.target = float(target)
-        if MOTION.is_reduced():                     # animations are off in Windows: just be there
+        if MOTION.is_reduced() and not fade:        # animations are off in Windows: just be there
             spring.snap()
             if self.on_step:
                 self.on_step()
@@ -696,15 +698,10 @@ class StatsBar(QWidget):
         items = list(items)
         changed = items != self.items
         self.items = items
-        if changed and self.isVisible():
+        if changed and self.isVisible():            # only when a number really changed, not on every visit
             self.count.snap(0.0)
             self.anim.to(self.count, 1.0)
         self.update()
-
-    def showEvent(self, e):
-        super().showEvent(e)
-        self.count.snap(0.0)
-        self.anim.to(self.count, 1.0)
 
     def shown(self, value):
         """The value as it reads partway through counting up ('12' -> '7', '0.71' -> '0.43'); words stay."""
@@ -899,11 +896,16 @@ class Group(QWidget):
         return row
 
     def clear(self):
-        for r in self.rows:
-            self.lay.removeWidget(r)
-            r.hide()
-            r.deleteLater()
-        self.rows = []
+        for r in list(self.rows):
+            self.remove(r)
+
+    def remove(self, row):
+        if row in self.rows:
+            self.rows.remove(row)
+            self.lay.removeWidget(row)
+            row.hide()
+            row.deleteLater()
+            self.update()
 
     def paintEvent(self, _):
         p = QPainter(self)
@@ -917,6 +919,31 @@ class Group(QWidget):
         for w in visible[:-1]:
             y = w.geometry().y() + w.geometry().height() - 0.5
             p.drawLine(QPointF(16, y), QPointF(self.width() - 1, y))
+
+
+class RowList(QWidget):
+    """Rows with hairlines above them and no card of their own: what goes inside a Collapsible in a Group
+    (a Group in a Group would draw a card inside a card)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.lay = QVBoxLayout(self)
+        self.lay.setContentsMargins(0, 0, 0, 0)
+        self.lay.setSpacing(0)
+        self.rows = []
+
+    def add(self, row):
+        self.lay.addWidget(row)
+        self.rows.append(row)
+        return row
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setPen(QPen(T.c("separator"), 1))
+        for w in self.rows:
+            if not w.isHidden():
+                y = w.geometry().y() + 0.5
+                p.drawLine(QPointF(16, y), QPointF(self.width() - 1, y))
 
 
 class Row(QWidget):
@@ -1035,7 +1062,7 @@ class NavItem(QWidget):
 class NavList(QWidget):
     """The sidebar's pages. The blue highlight slides from one to the next on a spring; with the keyboard,
     Tab reaches the list and the arrow keys change page."""
-    chosen = Signal(int)
+    chosen = Signal(int, bool)      # page index, and whether to animate (a click does; a key press doesn't)
 
     def __init__(self, entries, parent=None):
         super().__init__(parent)
@@ -1045,7 +1072,7 @@ class NavList(QWidget):
         self.items = []
         for i, (text, glyph, color) in enumerate(entries):
             item = NavItem(text, glyph, color, self)
-            item.clicked.connect(lambda i=i: self.choose(i))
+            item.clicked.connect(lambda i=i: self.choose(i, True))
             lay.addWidget(item)
             self.items.append(item)
         self.index = 0
@@ -1064,11 +1091,11 @@ class NavList(QWidget):
             self._sync()
             self.update()
 
-    def choose(self, i):
+    def choose(self, i, animate=False):
         i = int(clamp(i, 0, len(self.items) - 1))
         if i != self.index:
-            self.set_index(i)
-        self.chosen.emit(i)
+            self.set_index(i, animate)
+        self.chosen.emit(i, animate)
 
     def _sync(self):
         for n, item in enumerate(self.items):
@@ -1190,22 +1217,24 @@ class Curtain(QWidget):
 class PageFade(QObject):
     """Brings a QStackedWidget's new page in: it rises a few pixels while a Curtain over it fades out.
     Call start() right after setCurrentIndex(); place() when the stack moves or resizes."""
-    RISE = 14
+    RISE = 8
 
     def __init__(self, stack):
         super().__init__(stack)
         self.stack = stack
         self.curtain = Curtain(stack.parentWidget())
         self.anim = AnimDriver(stack, self.step)
-        self.t = self.anim.spring(1.0, 0.32, 1.0)
+        self.t = self.anim.spring(1.0, 0.22, 1.0)       # done in about a quarter of a second
+        self.rise = self.RISE
 
     def start(self, animate=True):
         for i in range(self.stack.count()):             # a page interrupted mid-rise goes back where it belongs
             if i != self.stack.currentIndex():
                 self.stack.widget(i).move(0, 0)
-        if animate and self.stack.isVisible() and not MOTION.is_reduced():
+        if animate and self.stack.isVisible():
+            self.rise = 0 if MOTION.is_reduced() else self.RISE      # animations off: fade, don't move
             self.t.snap(0.0)
-            self.anim.to(self.t, 1.0)
+            self.anim.to(self.t, 1.0, fade=True)
         else:
             self.t.snap(1.0)
         self.step()
@@ -1217,7 +1246,7 @@ class PageFade(QObject):
         t = clamp(self.t.value)
         page = self.stack.currentWidget()
         if page is not None:
-            page.move(0, round((1 - t) * self.RISE))
+            page.move(0, round((1 - t) * self.rise))
         self.curtain.alpha = 1 - t
         self.place()
         self.curtain.setVisible(t < 0.995)
@@ -1276,11 +1305,45 @@ THUMBS = ThumbLoader()
 class Thumb(QWidget):
     """A clip's thumbnail, asked for the first time it's actually drawn (so only for rows you scroll to)."""
 
+    clicked = Signal()
+
     def __init__(self, path, parent=None):
         super().__init__(parent)
         self.path = path
+        self.hover = False
         self.setFixedSize(64, 36)
+        self.setCursor(POINTER)
+        self.setFocusPolicy(Qt.FocusPolicy.TabFocus)
+        self.setAccessibleName("Play clip")
+        self.setToolTip("Play the clip")
         THUMBS.loaded.connect(self._loaded)
+
+    def enterEvent(self, e):
+        self.hover = True
+        self.update()
+
+    def leaveEvent(self, e):
+        self.hover = False
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        if self.rect().contains(e.position().toPoint()):
+            self.clicked.emit()
+
+    def keyPressEvent(self, e):
+        if e.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.clicked.emit()
+        else:
+            super().keyPressEvent(e)
+
+    def play_mark(self, p, r, strong):
+        """A small play triangle on a dark disc, so it reads over any frame."""
+        cx, cy = r.center().x(), r.center().y()
+        p.setPen(NO_PEN)
+        p.setBrush(QColor(0, 0, 0, 150 if strong else 95))
+        p.drawEllipse(QPointF(cx, cy), 11, 11)
+        p.setBrush(QColor(255, 255, 255, 255 if strong else 225))
+        p.drawPolygon(QPolygonF([QPointF(cx - 3.2, cy - 5), QPointF(cx + 5, cy), QPointF(cx - 3.2, cy + 5)]))
 
     def _loaded(self, path):
         if path == self.path:
@@ -1299,12 +1362,10 @@ class Thumb(QWidget):
         if img is None:
             if self.path not in THUMBS.images:
                 THUMBS.request(self.path)
-            p.setPen(NO_PEN)                           # a little play triangle while it loads / if there's none
-            p.setBrush(T.c("tertiary"))
-            cx, cy = r.center().x(), r.center().y()
-            p.drawPolygon(QPolygonF([QPointF(cx - 4, cy - 6), QPointF(cx + 6, cy), QPointF(cx - 4, cy + 6)]))
-            return
-        # fill the tile, cropping whichever way is needed
-        scale = max(r.width() / img.width(), r.height() / img.height())
-        w, h = img.width() * scale, img.height() * scale
-        p.drawImage(QRectF(r.center().x() - w / 2, r.center().y() - h / 2, w, h), img)
+        else:                                          # fill the tile, cropping whichever way is needed
+            scale = max(r.width() / img.width(), r.height() / img.height())
+            w, h = img.width() * scale, img.height() * scale
+            p.drawImage(QRectF(r.center().x() - w / 2, r.center().y() - h / 2, w, h), img)
+        self.play_mark(p, r, self.hover or self.hasFocus())
+        p.setClipping(False)
+        focus_ring(p, self, self.rect(), 6)

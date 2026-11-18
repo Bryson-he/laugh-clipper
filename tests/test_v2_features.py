@@ -202,5 +202,6 @@ def test_history_page_shows_stats_and_play(ctrl, tmp_path):
     w = SettingsWindow(ctrl)
     assert w.stats_bar.items[0] == ("1", "Clips saved") and w.stats_bar.items[4] == ("1", "Not funny")
     rows = w.history_rows
+    from laughclipper.widgets import Thumb
     texts = [b.text() for b in rows[1].findChildren(type(w.upd_btn))]
-    assert "Play" in texts and "Show" in texts
+    assert texts == ["Show in Folder"] and len(rows[1].findChildren(Thumb)) == 1     # the thumbnail plays it

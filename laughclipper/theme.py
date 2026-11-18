@@ -97,6 +97,7 @@ class Theme(QObject):
         #root[mica="true"] {{ background: transparent; }}
         #sidebar[mica="true"] {{ background: {self.rgba('sidebar', 0.5 if self.dark else 0.55)}; }}
         QLabel#pageTitle {{ font-family: "{self.display}"; font-size: 24px; font-weight: 700; }}
+        QLabel#statusTitle {{ font-family: "{self.display}"; font-size: 17px; font-weight: 600; }}
         QLabel#appName {{ font-family: "{self.display}"; font-size: 15px; font-weight: 600; }}
         QLabel#secondary, QLabel#footer, QLabel#value {{ color: {c('secondary')}; font-size: 12px; }}
         QLabel#secondary:disabled {{ color: {c('tertiary')}; }}
@@ -109,12 +110,13 @@ class Theme(QObject):
                             selection-background-color: {c('accent')}; selection-color: white; }}
         QLineEdit#search:focus {{ border-color: {c('accent')}; }}
         QPushButton:hover {{ background: {c('control_hover')}; }}
-        QPushButton:pressed {{ background: {c('control_press')}; }}
+        QPushButton:pressed {{ background: {c('control_press')}; padding: 4px 12px 2px 12px; }}
         QPushButton:disabled {{ color: {c('tertiary')}; }}
         QPushButton#prominent {{ background: {c('accent')}; color: white; font-weight: 600; }}
         QPushButton#prominent:hover {{ background: {c('accent_hover')}; }}
         QPushButton#prominent:disabled {{ background: {c('control')}; color: {c('tertiary')}; }}
         QPushButton#small {{ padding: 0px 8px; font-size: 12px; min-height: 16px; }}
+        QPushButton#small:pressed {{ padding: 1px 8px 0px 8px; min-height: 15px; }}
         QScrollArea {{ background: transparent; border: none; }}
         QScrollBar:vertical {{ background: transparent; width: 10px; margin: 4px 2px; }}
         QScrollBar::handle:vertical {{ background: {c('scroll')}; border-radius: 3px; min-height: 30px; }}

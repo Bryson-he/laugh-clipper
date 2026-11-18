@@ -14,8 +14,8 @@ from .engine import SOUNDS, short_name, sound_level, sound_names
 from .theme import T
 from .version import VERSION
 from .widgets import (Chip, Collapsible, Disclosure, Group, KeyCap, LevelMeter, NavList, PageFade, PopupButton,
-                      PositionPicker, ResultList, Row, Segmented, Slider, StatsBar, StatusPill, Switch, Thumb,
-                      WarningBadge, clamp, loudness)
+                      PositionPicker, ResultList, Row, RowList, Segmented, Slider, StatsBar, StatusPill, Switch,
+                      Thumb, WarningBadge, clamp, loudness)
 
 PAGES = [                       # (title, Segoe Fluent icon, tile colour); Ctrl+1…8 jump to them
     ("General", "\ue713", "#8e8e93"),
@@ -242,6 +242,7 @@ class SettingsWindow(QWidget):
         if self.mica:
             self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
             self.setProperty("mica", True)
+        self.built = False              # set once every page exists
         self.switches = {}
         self.sliders = {}
         self.out_rows = {}
@@ -312,11 +313,12 @@ class SettingsWindow(QWidget):
         outer.addWidget(side)
         outer.addWidget(self.stack, 1)
         self.fade = PageFade(self.stack)
+        self.built = True
         self.select(0, animate=False)
         self.update_status()
 
         for n in range(len(PAGES)):
-            QShortcut(QKeySequence(f"Ctrl+{n + 1}"), self, lambda n=n: self.select(n))
+            QShortcut(QKeySequence(f"Ctrl+{n + 1}"), self, lambda n=n: self.select(n, animate=False))
         QShortcut(QKeySequence.StandardKey.Find, self, self.focus_search)
         QApplication.instance().focusChanged.connect(self.follow_focus)
         self.tab_only()
@@ -362,7 +364,8 @@ class SettingsWindow(QWidget):
         return group.add(Row(title, sub, sl, val))
 
     def select(self, i, animate=True):
-        """Show page i. It rises a little and fades in (see widgets.PageFade)."""
+        """Show page i. From a click it rises a little and fades in (widgets.PageFade); from the keyboard
+        (Ctrl+1…8, the arrow keys, search) it's simply there, since nobody presses a key to watch a transition."""
         i = int(clamp(i, 0, self.stack.count() - 1))
         self.nav.set_index(i, animate)
         if self.stack.currentIndex() == i and animate:
@@ -378,7 +381,7 @@ class SettingsWindow(QWidget):
 
     def follow_focus(self, _old, new):
         """Tabbing to a control further down the page scrolls it into view."""
-        page = self.stack.currentWidget()
+        page = self.scroller(self.stack.currentIndex()) if self.stack.count() else None
         if new is not None and page is not None and page.isAncestorOf(new):
             page.ensureWidgetVisible(new, 20, 70)
 
@@ -423,9 +426,14 @@ class SettingsWindow(QWidget):
             return
         i, row = self.found[n]
         self.search.clear()
-        self.select(i)
+        self.select(i, animate=False)       # you asked for it by name: just be there
         if row is not None:
-            page = self.stack.widget(i)
+            page = self.scroller(i)
+            parent = row.parentWidget()
+            while parent is not None and parent is not page:       # a row folded away: open what holds it
+                if isinstance(parent, Collapsible) and getattr(parent, "opener", None) is not None:
+                    parent.opener.setChecked(True)
+                parent = parent.parentWidget()
 
             def show():
                 try:
@@ -452,16 +460,29 @@ class SettingsWindow(QWidget):
     # ---------------------------------------------------------- pages
     def page_general(self):
         p = Page("General")
-        self.health_group = p.section()
-        self.build_health()
-        g = p.section()
+        # one card that says what the app is doing right now; anything in the way is listed under it
+        g = self.health_group = p.section()
+        self.test_btn = QPushButton("Test Clip")
+        self.test_btn.setToolTip("Presses Medal's clip hotkey for real and checks the clip turns up")
+        self.test_btn.clicked.connect(self.ctrl.test_clip)
+        self.status_row = g.add(Row("", "", self.test_btn, self.switch("running")))
+        self.status_row.title.setObjectName("statusTitle")
+        self.status_row.setMinimumHeight(76)
+        self.status_row.layout().setContentsMargins(16, 12, 14, 12)
+        self.status_row.layout().setSpacing(14)
+        self.status_icon = QLabel(self.status_row)
+        self.status_icon.setFixedSize(44, 44)
+        self.status_row.layout().insertWidget(0, self.status_icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        self.switches["running"].setAccessibleName("Laugh detection")
         open_medal = QPushButton("Open Medal")
         open_medal.setObjectName("prominent")
         open_medal.clicked.connect(self.ctrl.open_medal)
         self.medal_row = g.add(Row("Medal isn't running", "Clips can't be saved until Medal is open.", open_medal))
         self.medal_row.layout().insertWidget(0, WarningBadge(), 0, Qt.AlignmentFlag.AlignVCenter)
         self.medal_row.setVisible(not self.ctrl.medal_ok)
-        self.run_row = g.add(Row("Laugh detection", "", self.switch("running")))
+        self.problem_rows = []
+        self.health_bad = []
+        self.build_health()
         g = p.section(footer="When the window is closed, Laugh Clipper keeps running in the system tray.")
         self.startup_sw = Switch(winutil.startup_enabled())
         self.startup_sw.toggled.connect(winutil.set_startup)
@@ -486,36 +507,29 @@ class SettingsWindow(QWidget):
         open_log.clicked.connect(lambda: winutil.open_file(str(config.LOG_PATH)))
         self.copy_diag = QPushButton("Copy Diagnostics")
         self.copy_diag.clicked.connect(self.copy_diagnostics)
-        g.add(Row("Something not working?", "Copies a summary of your setup and recent problems to paste to "
-                                            "whoever's helping. No folders or game names are included.",
-                  open_log, self.copy_diag))
+        g.add(Row("Something not working?", "Copies a summary of your setup and recent problems. No folders or "
+                                            "game names.", open_log, self.copy_diag))
         return p.finish()
 
     def build_health(self):
-        """The card at the top of General: one line when all is well, plus a row for each thing that isn't."""
+        """Under the status row: a row for each thing that would stop a clip saving (Medal has its own)."""
         g = self.health_group
-        g.clear()
+        for row in self.problem_rows:
+            g.remove(row)
+        self.problem_rows = []
         bad = [(key, text) for key, ok, text in self.ctrl.health() if ok is False]
-        test = QPushButton("Test Clip")
-        test.setToolTip("Presses Medal's clip hotkey for real and checks the clip turns up")
-        test.clicked.connect(self.ctrl.test_clip)
-        test.setEnabled(self.ctrl.medal_ok)
-        if bad:
-            title = "1 thing needs attention" if len(bad) == 1 else f"{len(bad)} things need attention"
-            pill = StatusPill("Check", "orange")
-            sub = "Clips might not save until this is sorted."
-        else:
-            title, pill = "Everything's working", StatusPill("All good", "green")
-            sub = "Medal, your hotkey and your audio all check out. Test Clip saves a real clip to make sure."
-        self.health_row = g.add(Row(title, sub, pill, test))
         self.health_bad = [key for key, _ in bad]
         for key, text in bad:
             if key == "medal":
-                continue                       # it has its own row below, with the Open Medal button
+                continue                       # its row has the Open Medal button
             row = g.add(Row(text))
             row.title.setWordWrap(True)
             row.layout().insertWidget(0, WarningBadge(), 0, Qt.AlignmentFlag.AlignVCenter)
+            self.problem_rows.append(row)
+        self.test_btn.setEnabled(self.ctrl.medal_ok)
         self.tab_only()
+        if self.built:
+            self.update_status()
 
     def copy_diagnostics(self):
         QGuiApplication.clipboard().setText(self.ctrl.diagnostics())
@@ -558,6 +572,19 @@ class SettingsWindow(QWidget):
                                                "the middle of a sentence.")
         self.voice_row = g.add(Row("Cancel with your voice", "", self.switch("voice_cancel")))
         self.hype_row = g.add(Row("Clip with hype phrases", "", self.switch("hype_phrases")))
+        from . import voice
+        self.phrase_chips = {}
+        chips = QWidget()
+        cl = QHBoxLayout(chips)
+        cl.setContentsMargins(0, 0, 0, 0)
+        cl.setSpacing(6)
+        for phrase in voice.CLIP_PHRASES + voice.HYPE_PHRASES:
+            chip = Chip(f"\u201c{phrase}\u201d", phrase not in S["phrases_off"])
+            chip.setAccessibleName(f"Listen for {phrase}")
+            chip.toggled.connect(lambda on, phrase=phrase: self.toggle_phrase(phrase, on))
+            cl.addWidget(chip)
+            self.phrase_chips[phrase] = chip
+        self.phrases_row = g.add(Row("Phrases", "", chips))
         self.update_voice_row()
 
         g = p.section("Controller or wheel", footer="Works with Xbox and PlayStation controllers, racing wheels "
@@ -792,12 +819,27 @@ class SettingsWindow(QWidget):
         else:
             text = ("Say \u201cdon\u2019t clip\u201d or \u201ccancel clip\u201d while the popup is up and it "
                     "won\u2019t save." + mic_off)
-            hype = ("Say \u201cclip that\u201d to save a clip straight away, or shout \u201cno way\u201d, "
-                    "\u201coh my god\u201d or \u201clet\u2019s go\u201d to count it as a moment." + mic_off)
+            hype = ("\u201cClip that\u201d and \u201cclip it\u201d save a clip straight away. The others count "
+                    "as a moment, like a laugh." + mic_off)
         self.voice_row.set_sub(text)
         self.hype_row.set_sub(hype)
         for row in (self.voice_row, self.hype_row):
             row.setEnabled(voice.available())
+        for phrase, chip in self.phrase_chips.items():
+            chip.set_silent(phrase not in S["phrases_off"])
+        on = len(voice.wanted_phrases())
+        self.phrases_row.set_sub("Click one to turn it off." if on == len(self.phrase_chips) else
+                                 f"Listening for {on} of {len(self.phrase_chips)}.")
+        self.phrases_row.setEnabled(voice.available() and S["hype_phrases"])
+
+    def toggle_phrase(self, phrase, on):
+        from . import voice
+        off = [p for p in S["phrases_off"] if p != phrase] + ([] if on else [phrase])
+        if len(off) == len(self.phrase_chips):          # the last one: turn the whole thing off instead
+            self.phrase_chips[phrase].set_silent(True)
+            self.ctrl.set("hype_phrases", False)
+            return
+        self.ctrl.set("phrases_off", [p for p in voice.CLIP_PHRASES + voice.HYPE_PHRASES if p in off])
 
     def capture_pad(self):
         self.ctrl.capture_pad_button()
@@ -836,9 +878,9 @@ class SettingsWindow(QWidget):
 
     def page_detection(self):
         p = Page("Detection")
-        g = p.section("Trigger on", footer="Laughter is the most reliable. Shouting and screaming can also "
-                                           "pick up loud game audio. Use the arrow to give a sound its own "
-                                           "trigger level, or to only listen for it on your mic.")
+        g = p.section("Trigger on", footer="Laughter is the most reliable; shouting and screaming can also "
+                                           "pick up loud game audio. A sound's arrow gives it its own level and "
+                                           "sources.")
         self.trigger_sw, self.sound_opts = {}, {}
         for key, (name, _, _) in SOUNDS.items():
             sw = Switch(key in S["triggers"])
@@ -854,29 +896,65 @@ class SettingsWindow(QWidget):
             self.sound_opts[key] = (more, panel, opts)
         self.update_sound_opts()
         g = p.section()
-        g.add(Row("Group laughs", "When you and your friends (or the game) laugh at the same time, it triggers "
-                                  "sooner and at a lower level. Needs your mic and some PC audio on.",
-                  self.switch("group_laughs")))
-        g = p.section(footer="Watch the live score while you laugh, then set the trigger just below where "
-                             "it usually peaks.")
-        self.live_meter = LevelMeter(210)
-        g.add(Row("Live score", "Grey shows how loud it is. The bar on top is the score for the sounds above, "
-                                "green once it passes the trigger level. The thin line holds your recent peak.",
-                  self.live_meter))
+        g.add(Row("Group laughs", "Triggers sooner when you and your friends laugh together. Needs your mic and "
+                                  "some PC audio on.", self.switch("group_laughs")))
+        g = p.section(footer="Watch the live score above while you laugh, then set the trigger level just below "
+                             "where it usually peaks.")
         calibrate = QPushButton("Calibrate…")
         calibrate.clicked.connect(self.ctrl.show_calibration)
-        g.add(Row("Calibrate for your game", "Optional. Listens to your game for a minute, then to you laughing, "
-                                             "and suggests a trigger level between them.", calibrate))
+        g.add(Row("Calibrate for your game", "Listens to your game, then to you laughing, and suggests a level.",
+                  calibrate))
         self.slider_row(g, "Trigger level", "Lower catches more, higher means fewer false alarms.",
                         "threshold", 0.05, 0.9, 0.01, lambda v: f"{v:.2f}")
-        self.slider_row(g, "Length needed", "How long the laugh (or cheer…) has to last before it counts.",
+        # the three most people never touch sit behind a disclosure
+        more = Disclosure()
+        more.setAccessibleName("More timing")
+        self.timing_row = g.add(Row("More timing", "", more))
+        timing = RowList()
+        self.slider_row(timing, "Length needed", "How long a laugh has to last before it counts.",
                         "min_laugh", 0.5, 3, 0.25, secs)
-        self.slider_row(g, "Pause tolerance",
-                        "Breaths and short pauses up to this long still count as the same laugh.",
+        self.slider_row(timing, "Pause tolerance", "Pauses up to this long still count as the same laugh.",
                         "pause_tolerance", 0.5, 4, 0.25, secs)
-        self.slider_row(g, "Wait between prompts", "Stops it asking again straight away.",
+        self.slider_row(timing, "Wait between prompts", "Stops it asking again straight away.",
                         "cooldown", 0, 120, 5, secs)
-        return p.finish()
+        panel = g.add(Collapsible(timing))
+        panel.opener = more
+        more.toggled.connect(panel.set_open)
+        self.timing_panel = panel
+        self.update_timing_row()
+        p.finish()
+
+        # the live score stays put above the scrolling settings, so it's in view whatever you're changing
+        holder = QWidget()
+        holder.setObjectName("content")
+        hl = QVBoxLayout(holder)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(0)
+        bar = QWidget()
+        bar.setObjectName("content")
+        bl = QVBoxLayout(bar)
+        bl.setContentsMargins(30, 16, 30, 0)
+        pinned = Group()
+        self.live_meter = LevelMeter(300)
+        self.live_meter.setToolTip("Grey shows how loud it is. The bar on top is the score for the sounds you "
+                                   "trigger on, green once it passes the trigger level. The thin line holds your "
+                                   "recent peak.")
+        self.live_meter.setAccessibleName("Live score")
+        self.live_row = pinned.add(Row("Live score", "", self.live_meter))
+        bl.addWidget(pinned)
+        hl.addWidget(bar)
+        hl.addWidget(p, 1)
+        holder.scroll_area = p      # (not .scroll: that's a QWidget method)
+        return holder
+
+    def update_timing_row(self):
+        self.timing_row.set_sub(f"Length needed {secs(S['min_laugh'])}  ·  pause tolerance "
+                                f"{secs(S['pause_tolerance'])}  ·  wait between prompts {secs(S['cooldown'])}")
+
+    def scroller(self, i):
+        """The scrolling part of page i (Detection keeps its live score outside it)."""
+        page = self.stack.widget(i)
+        return getattr(page, "scroll_area", page)
 
     def page_history(self):
         p = Page("History")
@@ -976,6 +1054,11 @@ class SettingsWindow(QWidget):
             row = g.add(self.history_row(it))
             self.history_rows.append(row)
         self.tab_only()
+        newest = self.ctrl.history[-1].get("time") if self.ctrl.history else None
+        if self.history_rows and self.isVisible() and newest != getattr(self, "history_newest", newest) \
+                and items and items[0].get("time") == newest:
+            self.history_rows[0].flash()            # a clip just arrived while you were looking
+        self.history_newest = newest
 
     def history_row(self, it):
         name = sound_names(it.get("sound"))[0]
@@ -993,12 +1076,7 @@ class SettingsWindow(QWidget):
         right = [pill]
         has_file = status == "saved" and it.get("file") and Path(it["file"]).exists()
         if has_file:
-            play = QPushButton("Play")
-            play.setObjectName("small")
-            play.setToolTip("Open the clip in your video player")
-            play.clicked.connect(lambda _=False, f=it["file"]: winutil.open_file(f))
-            right.append(play)
-            show = QPushButton("Show")
+            show = QPushButton("Show in Folder")
             show.setObjectName("small")
             show.setToolTip(it["file"])
             show.clicked.connect(lambda _=False, f=it["file"]: winutil.reveal(f))
@@ -1013,8 +1091,10 @@ class SettingsWindow(QWidget):
             test.clicked.connect(self.ctrl.test_clip)
             right.append(test)
         row = Row(title, sub, *right)
-        if has_file:
-            row.layout().insertWidget(0, Thumb(it["file"], row), 0, Qt.AlignmentFlag.AlignVCenter)
+        if has_file:                                # the thumbnail is the Play button
+            thumb = Thumb(it["file"], row)
+            thumb.clicked.connect(lambda f=it["file"]: winutil.open_file(f))
+            row.layout().insertWidget(0, thumb, 0, Qt.AlignmentFlag.AlignVCenter)
         return row
 
     # ---------------------------------------------------------- games
@@ -1174,8 +1254,23 @@ class SettingsWindow(QWidget):
             h = self.hearing(key)
             row.set_sub(h if h else (name if connected else "Not connected"))
         live = list(self.ctrl.engine.threads)
-        levels = [v for v in (self.display_level(k) for k in live) if v is not None]
-        self.live_meter.set(max(levels, default=0.0), thr, max((self.display_volume(k) for k in live), default=0.0))
+        levels = {k: v for k, v in ((k, self.display_level(k)) for k in live) if v is not None}
+        self.live_meter.set(max(levels.values(), default=0.0), thr,
+                            max((self.display_volume(k) for k in live), default=0.0))
+        self.live_row.set_sub(self.live_text(levels))
+
+    def live_text(self, levels):
+        """What the pinned live score says under its name: the source scoring highest, and what it hears."""
+        eng = self.ctrl.engine
+        if not S["running"]:
+            return "Paused"
+        if not eng.threads:
+            return "Nothing to listen to. Turn on a source on the Audio page."
+        if not levels:
+            return self.hearing(next(iter(eng.threads))) or "Starting…"
+        key = max(levels, key=levels.get)
+        who = "Your mic" if key[0] == "mic" else short_name(key[1])
+        return f"{self.hearing(key)}  ·  {who}"
 
     # ---------------------------------------------------------- misc
     def refresh_displays(self):
@@ -1235,18 +1330,31 @@ class SettingsWindow(QWidget):
         state, game = self.ctrl.status(), self.ctrl.game
         n = len(self.ctrl.engine.wanted())
         self.medal_row.setVisible(not self.ctrl.medal_ok)
+        medal = "Medal ready" if self.ctrl.medal_ok else "Medal isn't running"
+        sources = f"{n} source{'s' if n != 1 else ''}"
         if state == "listening":
             self.status.setText(f'<span style="color:{T.css("green")}">●</span> Listening')
-            self.run_row.set_sub(f"Listening to {n} source{'s' if n != 1 else ''}." if n else
-                                 "Nothing selected. Pick a mic or PC audio in Audio.")
+            title = "Listening for laughs"
+            sub = ("  ·  ".join(x for x in (game, sources, medal) if x) if n else
+                   "Nothing to listen to. Turn on your mic or some PC audio on the Audio page.")
         elif state == "waiting":
             self.status.setText(f'<span style="color:{T.css("orange")}">●</span> Waiting for a game')
-            self.run_row.set_sub("Waiting for a game. Detection starts when one is the window in front.")
+            title, sub = "Waiting for a game", f"It starts listening when a game is in front  ·  {medal}"
         else:
             self.status.setText("Paused")
-            self.run_row.set_sub("Paused. Turn on to start listening for laughs.")
+            title, sub = "Paused", "Turn it on to start listening for laughs."
         if state != "paused" and not self.ctrl.medal_ok:
             self.status.setText(f'<span style="color:{T.css("orange")}">●</span> Medal isn\'t running')
+        extra = len(self.health_bad) - ("medal" in self.health_bad)
+        if state != "paused" and extra > 0:
+            sub += f"  ·  {extra} thing{'s' if extra != 1 else ''} to fix below"
+        if self.isVisible() and self.status_row.title.text() not in ("", title):
+            self.status_row.flash()                 # listening <-> waiting <-> paused: show that it changed
+        self.status_row.title.setText(title)
+        self.status_row.set_sub(sub)
+        icon = self.ctrl.icon if state == "listening" and not self.health_bad else self.ctrl.tray_icon(
+            "paused" if state == "paused" else "warning" if self.health_bad else "waiting")
+        self.status_icon.setPixmap(icon.pixmap(44, 44))
         if not S["game_only"]:
             self.game_row.set_sub("Off, so it listens all the time.")
         elif game:
@@ -1287,10 +1395,12 @@ class SettingsWindow(QWidget):
         if key == "pause_hotkey":
             self.pause_keycap.recording = False
             self.update_pause_row()
-        if key in ("listen_mic", "voice_cancel", "hype_phrases"):
+        if key in ("listen_mic", "voice_cancel", "hype_phrases", "phrases_off"):
             self.update_voice_row()
         if key == "pad_button":
             self.update_pad_rows()
+        if key in ("min_laugh", "pause_tolerance", "cooldown"):
+            self.update_timing_row()
         if key == "pad_mode":
             self.pad_mode.set_items(PAD_MODES, 0 if S["pad_mode"] == "popup" else 1)
         if key in ("bookmark_hotkey", "bookmark_when_recording"):

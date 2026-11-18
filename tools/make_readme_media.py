@@ -43,7 +43,7 @@ from laughclipper import app as appmod, config, medal, settings_window, theme, t
 from laughclipper.config import S  # noqa: E402
 from laughclipper.theme import T  # noqa: E402
 
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 MICS = ["Wave:3 Mic (Elgato Wave:3)", "Headset Microphone (Arctis Nova Pro Wireless)"]
 SPEAKERS = ["Game (Elgato Virtual Audio)", "Voice Chat (Elgato Virtual Audio)", "Browser (Elgato Virtual Audio)",
             "Music (Elgato Virtual Audio)", "System (Elgato Virtual Audio)"]
@@ -244,8 +244,8 @@ def window_shots():
         w.update_status()
         for i, (title, _, _) in enumerate(settings_window.PAGES):
             w.select(i, animate=False)
-            page = w.stack.widget(i)
-            h = max(560, page.widget().sizeHint().height())
+            page = w.scroller(i)
+            h = max(560, page.widget().sizeHint().height() + (page.y() if page is not w.stack.widget(i) else 0))
             w.resize(900, h)
             for _ in range(3):
                 w.refresh_live()

@@ -3,8 +3,9 @@ and morphs into a 'Clip saved' confirmation."""
 
 import math
 
-from PySide6.QtCore import QElapsedTimer, QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFontMetricsF, QLinearGradient, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QElapsedTimer, QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import (QColor, QFontMetricsF, QGuiApplication, QLinearGradient, QPainter, QPainterPath, QPen,
+                           QRadialGradient, QRegion)
 from PySide6.QtWidgets import QWidget
 
 from . import winutil
@@ -438,6 +439,87 @@ class Toast(QWidget):
             amp = 0.45 + 0.55 * abs(math.sin(self.t * 7.5 + i * 1.9))
             bh = 3 + 11 * lv * amp
             p.drawRoundedRect(QRectF(x + i * 5.5, cy - bh / 2, 3, bh), 1.5, 1.5)
+
+
+class PopupStage(QWidget):
+    """The real popup, drawn inside a window on a game-like backdrop: the setup guide shows it so the first
+    thing a new user sees is what will appear over their game. It is a Toast that is never put on screen;
+    play() makes a fresh one and lets it spring open, then holds it still."""
+    HOLD_AFTER = 1.5        # seconds: long enough for the entrance to settle, then nothing ticks
+
+    def __init__(self, mode="ask", source="Voice Chat", sound="laughter", hotkey="", height=150, parent=None):
+        super().__init__(parent)
+        self.mode, self.source, self.sound, self.hotkey = mode, source, sound, hotkey
+        self.toast = None
+        self.setFixedHeight(height)
+        self.setAccessibleName("A preview of the popup that appears over your game")
+        self.still()
+
+    def make(self):
+        self.drop()
+        t = Toast(QGuiApplication.primaryScreen(), "bottom-center", self.mode, self.source, self.sound,
+                  self.hotkey, 8)
+        t.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        if self.mode == "saved":
+            t.saved_sub = "In Medal"
+        t.close_at = None                       # it's a picture: it never counts down to closing
+        t.timer.timeout.connect(self.update)
+        self.toast = t
+        return t
+
+    def drop(self):
+        if self.toast is not None:
+            self.toast.timer.stop()
+            self.toast.deleteLater()
+            self.toast = None
+
+    def still(self):
+        """Show it fully open, with no animation."""
+        t = self.make()
+        t.timer.stop()
+        for s in t.springs:
+            s.snap()
+        t.left = t.total * 0.8
+        self.update()
+
+    def play(self):
+        """Spring it open from nothing, the way it arrives in a game."""
+        t = self.make()
+        QTimer.singleShot(int(self.HOLD_AFTER * 1000), lambda t=t: self.hold(t))
+
+    def hold(self, t):
+        if t is self.toast:
+            t.timer.stop()
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        if self.toast is not None:
+            self.toast.timer.stop()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect())
+        clip = QPainterPath()
+        clip.addRoundedRect(r, 14, 14)
+        p.setClipPath(clip)
+        g = QLinearGradient(r.topLeft(), r.bottomRight())       # a game at night: deep blue into purple
+        g.setColorAt(0, QColor("#16213e"))
+        g.setColorAt(0.55, QColor("#2a1b54"))
+        g.setColorAt(1, QColor("#4a1d5e"))
+        p.fillRect(r, g)
+        for cx, cy, rad, col in ((0.18, 0.2, 0.55, "#2f6bff"), (0.85, 0.85, 0.6, "#ff4fa3"), (0.6, 0.1, 0.35, "#ffd60a")):
+            glow = QRadialGradient(QPointF(r.left() + cx * r.width(), r.top() + cy * r.height()), rad * r.width())
+            c = QColor(col)
+            c.setAlpha(70)
+            glow.setColorAt(0, c)
+            c.setAlpha(0)
+            glow.setColorAt(1, c)
+            p.fillRect(r, glow)
+        t = self.toast
+        if t is not None:
+            p.translate((self.width() - t.width()) / 2, (self.height() - t.height()) / 2)
+            t.render(p, QPoint(0, 0), QRegion(), QWidget.RenderFlag.DrawChildren)
 
 
 # ---------------------------------------------------------------- icons
