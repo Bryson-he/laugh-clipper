@@ -149,18 +149,27 @@ def framed(shot, pad=36):
     return img
 
 
+SCENE = "game"      # "site": the website's own backdrop, in the app icon's amber and a night-sky navy
+
+
 def backdrop(p, r):
-    """Game-ish backdrop card the popups float on: deep blue to purple, with a couple of soft glows."""
+    """Game-ish backdrop card the popups float on: deep blue to purple, with a couple of soft glows.
+    The website's version is navy with an amber glow, to match its one accent colour."""
     path = QPainterPath()
     path.addRoundedRect(r, 22, 22)
     p.save()
     p.setClipPath(path)
     g = QLinearGradient(r.topLeft(), r.bottomRight())
-    g.setColorAt(0, QColor("#16213e"))
-    g.setColorAt(0.55, QColor("#2a1b54"))
-    g.setColorAt(1, QColor("#4a1d5e"))
+    if SCENE == "site":
+        stops, glows = ("#0d1b2a", "#11233a", "#14263a"), ((0.85, 0.08, 0.6, "#ffb020"), (0.08, 0.95, 0.6, "#1f6feb"))
+    else:
+        stops = ("#16213e", "#2a1b54", "#4a1d5e")
+        glows = ((0.18, 0.2, 0.55, "#2f6bff"), (0.85, 0.85, 0.6, "#ff4fa3"), (0.6, 0.1, 0.35, "#ffd60a"))
+    g.setColorAt(0, QColor(stops[0]))
+    g.setColorAt(0.55, QColor(stops[1]))
+    g.setColorAt(1, QColor(stops[2]))
     p.fillRect(r, g)
-    for cx, cy, rad, col in ((0.18, 0.2, 0.55, "#2f6bff"), (0.85, 0.85, 0.6, "#ff4fa3"), (0.6, 0.1, 0.35, "#ffd60a")):
+    for cx, cy, rad, col in glows:
         glow = QRadialGradient(QPointF(r.left() + cx * r.width(), r.top() + cy * r.height()), rad * r.width())
         c = QColor(col)
         c.setAlpha(70)
@@ -229,6 +238,9 @@ def fake_thumbnails():
         THUMBS.images[entry["file"]] = img
 
 
+SITE_CROPS = {"Detection": (246, 6, 644, 318), "Audio": (246, 66, 644, 318), "History": (246, 60, 644, 344)}
+
+
 def window_shots():
     fake_thumbnails()
     w = settings_window.SettingsWindow(ctrl)
@@ -254,7 +266,11 @@ def window_shots():
             w.stats_bar.count.snap(1.0)                # (it counts up when the page appears)
             if w.focusWidget():
                 w.focusWidget().clearFocus()
-            shot = framed(w.grab().toImage())
+            grabbed = w.grab().toImage()
+            if title in SITE_CROPS:
+                x, y, cw, ch = (int(v * DPR) for v in SITE_CROPS[title])
+                save_png(grabbed.copy(x, y, cw, ch), f"site-{title.lower()}-{'dark' if dark else 'light'}.png")
+            shot = framed(grabbed)
             name = f"settings-{title.lower()}-{'dark' if dark else 'light'}.png"
             save_png(shot, name)
             shots[name] = shot
@@ -276,8 +292,9 @@ def popup_frame(t):
     return to_pil(img)
 
 
-def animate(name, t, script, tail=0.7):
-    """Step the popup at ~30 fps; `script(time)` drives it. Stops once the popup has closed."""
+def animate(name, t, script, tail=0.7, still=None):
+    """Step the popup at ~30 fps; `script(time)` drives it. Stops once the popup has closed.
+    still: also save one frame (1.5 s in, fully open) as a PNG, for people who have animations turned off."""
     frames, now = [], 0.0
     while now < 20:
         script(now)
@@ -287,13 +304,16 @@ def animate(name, t, script, tail=0.7):
         if not t.timer.isActive():
             break
         frames.append(popup_frame(t))
+    if still:
+        frames[min(len(frames) - 1, 46)].save(OUT / still, optimize=True)
+        print("wrote", still)
     blank = popup_frame(make_toast("ask", "", "laughter"))      # an empty card while it waits to loop
     frames += [blank] * int(tail / 0.032)
     frames[0].save(OUT / name, save_all=True, append_images=frames[1:], duration=32, loop=0, quality=88, method=6)
     print("wrote", name, f"({len(frames)} frames, {(OUT / name).stat().st_size // 1024} KB)")
 
 
-def popup_clip():
+def popup_clip(name="popup-clip.webp", still=None):
     """'Laugh detected' springs open, Clip is pressed, it waits for Medal's file, then shows 'Clip saved'."""
     t = make_toast("ask", "Voice Chat", "laughter")
     state = {}
@@ -311,10 +331,10 @@ def popup_clip():
         elif now >= 3.0 and "saved" not in state:
             state["saved"] = True
             t.set_saved("Rocket League")
-    animate("popup-clip.webp", t, script)
+    animate(name, t, script, still=still)
 
 
-def popup_autosave():
+def popup_autosave(name="popup-autosave.webp", still=None):
     """Auto-save: waits while the laughing continues, counts down, then saves on its own."""
     total = 3.0
     t = make_toast("pending", "Game", "cheering", total)
@@ -331,7 +351,18 @@ def popup_autosave():
         elif now >= 2.4 + total + 0.9 and "saved" not in state:
             state["saved"] = True
             t.set_saved("Rocket League")
-    animate("popup-autosave.webp", t, script)
+    animate(name, t, script, still=still)
+
+
+def site_media():
+    """The website's own pictures: the two popup animations on its amber-and-navy backdrop, each with a still."""
+    global SCENE
+    SCENE = "site"
+    try:
+        popup_clip("site-popup.webp", "site-popup-still.png")
+        popup_autosave("site-autosave.webp", "site-autosave-still.png")
+    finally:
+        SCENE = "game"
 
 
 def popup_gallery():
@@ -389,7 +420,9 @@ if __name__ == "__main__":
     OUT.mkdir(parents=True, exist_ok=True)
     shots = window_shots()
     set_theme(True)
-    hero(shots)
-    popup_gallery()
-    popup_clip()
-    popup_autosave()
+    if "--site" not in sys.argv:        # --site: only the website's pictures (the animations take a while)
+        hero(shots)
+        popup_gallery()
+        popup_clip()
+        popup_autosave()
+    site_media()
